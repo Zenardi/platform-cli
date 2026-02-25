@@ -42,6 +42,8 @@ platform plugin add kubernetes           ./prod-idp
 platform plugin add kubernetes-ingestor  ./prod-idp
 platform plugin add crossplane-resources ./prod-idp
 platform plugin add argocd               ./prod-idp
+platform plugin add grafana              ./prod-idp
+platform plugin add infrawallet          ./prod-idp
 
 # Auth — Microsoft Azure AD, no guest access
 platform auth add microsoft ./prod-idp \
@@ -53,7 +55,8 @@ platform auth add microsoft ./prod-idp \
 platform validate ./prod-idp
 ```
 
-Then follow the printed code-change checklists for each plugin and auth provider.
+The CLI auto-patches `index.ts`, `EntityPage.tsx`, `App.tsx`, and `apis.ts` for each plugin.
+Follow the printed "Next Steps" for credentials and any remaining manual configuration.
 
 ## Example 3: Crossplane-Focused Platform Engineering Instance
 
@@ -192,4 +195,113 @@ jobs:
           for f in catalog-entities/**/*.yaml; do
             nu platform/main.nu entity validate "$f"
           done
+```
+
+## Example 8: FinOps / Cloud Cost Visibility Instance
+
+Backstage as a cloud cost management portal with multi-cloud aggregation and per-team breakdown.
+
+```bash
+platform init finops-idp
+platform config init ./finops-idp --name "FinOps IDP"
+
+# Multi-cloud cost aggregation (AWS, Azure, GCP, Confluent, MongoDB Atlas)
+platform plugin add infrawallet ./finops-idp
+
+# Per-team / per-entity engineering cost breakdown
+platform plugin add cost-insights ./finops-idp
+
+# Auth
+platform auth add microsoft ./finops-idp --no-guest
+
+platform validate ./finops-idp
+```
+
+**Configure InfraWallet** — add your cloud credentials to `app-config.yaml`:
+```yaml
+backend:
+  infraWallet:
+    integrations:
+      aws:
+        - name: my-aws-account
+          accountId: '123456789012'
+          assumedRoleName: InfraWalletRole
+          # accessKeyId / secretAccessKey optional (uses default credential chain)
+      azure:
+        - name: my-azure-sub
+          subscriptionId: ${AZURE_SUBSCRIPTION_ID}
+          tenantId: ${AZURE_TENANT_ID}
+          clientId: ${AZURE_CLIENT_ID}
+          clientSecret: ${AZURE_CLIENT_SECRET}
+```
+
+**Replace the mock Cost Insights client** — edit `packages/app/src/apis.ts`:
+```ts
+// Replace ExampleCostInsightsClient with your real implementation
+import { MyCostInsightsClient } from './MyCostInsightsClient';
+// factory: () => new MyCostInsightsClient(),
+```
+
+**Add sidebar entries** in `packages/app/src/components/Root/Root.tsx`:
+```tsx
+import { InfraWalletIcon } from '@electrolux-oss/plugin-infrawallet';
+import MoneyIcon from '@material-ui/icons/MonetizationOn';
+
+<SidebarItem icon={InfraWalletIcon} to="infrawallet"   text="InfraWallet" />
+<SidebarItem icon={MoneyIcon}       to="cost-insights" text="Cost Insights" />
+```
+
+## Example 9: Observability-First Instance
+
+Backstage with Grafana dashboards and alerts surfaced on every entity overview page.
+
+```bash
+platform init observability-idp
+platform config init ./observability-idp --name "Observability IDP"
+
+platform plugin add techdocs    ./observability-idp
+platform plugin add kubernetes  ./observability-idp
+platform plugin add grafana     ./observability-idp
+platform plugin add argocd      ./observability-idp
+
+platform auth add github ./observability-idp
+
+platform validate ./observability-idp
+```
+
+**Configure Grafana proxy** in `app-config.yaml`:
+```yaml
+proxy:
+  '/grafana/api':
+    target: https://grafana.your-company.com/
+    headers:
+      Authorization: Bearer ${GRAFANA_TOKEN}
+
+grafana:
+  domain: https://grafana.your-company.com
+  unifiedAlerting: true
+```
+
+**Annotate catalog entities** to link Grafana dashboards:
+```yaml
+# catalog-info.yaml
+metadata:
+  annotations:
+    grafana/alert-label-selector: 'service=my-service'
+    grafana/dashboard-selector: my-service
+```
+
+## Example 10: Holiday Tracker — Regional HR Calendar
+
+Add a global holiday calendar page powered by the Calendarific API.
+
+```bash
+platform plugin add holiday-tracker ./my-backstage
+```
+
+Set environment variables and navigate to `/holidays`:
+```bash
+export HOLIDAY_TRACKER_ACCESS_KEY=your_calendarific_api_key
+export HOLIDAY_TRACKER_LOCATION=IN   # country code: IN, US, GB, DE, ...
+export HOLIDAY_TRACKER_YEAR=2025
 ```

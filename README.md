@@ -34,11 +34,13 @@ source ~/.config/nushell/env.nu
 # 1. Scaffold a new Backstage instance (runs npx @backstage/create-app@latest)
 platform init my-backstage
 
-# 2. Add plugins
-platform plugin add kubernetes ./my-backstage
-platform plugin add techdocs   ./my-backstage
+# 2. Add plugins — installs packages, patches app-config.yaml and TypeScript source files
+platform plugin add kubernetes    ./my-backstage
+platform plugin add techdocs      ./my-backstage
+platform plugin add grafana       ./my-backstage
+platform plugin add cost-insights ./my-backstage
 
-# 3. Add Microsoft Azure AD auth (no guest sign-in)
+# 3. Add Microsoft Azure AD auth (auto-patches index.ts and App.tsx)
 platform auth add microsoft ./my-backstage --no-guest
 
 # 4. Validate
@@ -118,23 +120,30 @@ platform plugin remove <plugin-id> <instance-path>
 
 **Available plugins:**
 
-| ID | Name | Packages |
-|----|------|---------|
-| `azure-devops` | Azure DevOps | frontend + backend |
-| `github-actions` | GitHub Actions | frontend only |
-| `kubernetes` | Kubernetes | frontend + backend |
-| `techdocs` | TechDocs | frontend + backend |
-| `argocd` | Argo CD | frontend + backend |
-| `sonarqube` | SonarQube | frontend + backend |
-| `kubernetes-ingestor` | Kubernetes Ingestor | backend only |
-| `crossplane-resources` | Crossplane Resources | frontend + backend |
+| ID | Name | Packages | Auto-patches |
+|----|------|---------|--------------|
+| `azure-devops` | Azure DevOps | frontend + backend | `index.ts`, `EntityPage.tsx` |
+| `github-actions` | GitHub Actions | frontend only | `EntityPage.tsx` |
+| `kubernetes` | Kubernetes | frontend + backend | `index.ts`, `EntityPage.tsx` |
+| `techdocs` | TechDocs | frontend + backend | `index.ts`, `EntityPage.tsx` |
+| `argocd` | Argo CD | frontend + backend | `index.ts` |
+| `sonarqube` | SonarQube | frontend + backend | `index.ts` |
+| `kubernetes-ingestor` | Kubernetes Ingestor | backend only | `index.ts` |
+| `crossplane-resources` | Crossplane Resources | frontend + backend | `index.ts`, `apis.ts`, `EntityPage.tsx` |
+| `grafana` | Grafana | frontend only | `EntityPage.tsx` |
+| `holiday-tracker` | Holiday Tracker | frontend only | `App.tsx` |
+| `cost-insights` | Cost Insights | frontend only | `apis.ts`, `App.tsx` |
+| `infrawallet` | InfraWallet | frontend + backend | `index.ts`, `App.tsx` |
 
 ```bash
 # Examples
-platform plugin add kubernetes          ./my-backstage
-platform plugin add kubernetes-ingestor ./my-backstage
+platform plugin add kubernetes           ./my-backstage
+platform plugin add kubernetes-ingestor  ./my-backstage
 platform plugin add crossplane-resources ./my-backstage
-platform plugin add argocd              ./my-backstage --skip-config
+platform plugin add grafana              ./my-backstage
+platform plugin add cost-insights        ./my-backstage
+platform plugin add infrawallet          ./my-backstage
+platform plugin add argocd               ./my-backstage --skip-config
 ```
 
 ---

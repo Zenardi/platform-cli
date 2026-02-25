@@ -39,12 +39,21 @@ platform plugin add argocd               .
 platform plugin add azure-devops         .
 platform plugin add kubernetes-ingestor  .
 platform plugin add crossplane-resources .
+platform plugin add grafana              .
+platform plugin add cost-insights        .
+platform plugin add infrawallet          .
+platform plugin add holiday-tracker      .
 ```
 
 Each command:
 - Runs `yarn add <package>` in `packages/app` and/or `packages/backend`
 - Appends the plugin's config snippet to `app-config.yaml`
-- Prints a "Next Steps" checklist with the manual code changes needed
+- **Auto-patches** TypeScript source files where applicable:
+  - `packages/backend/src/index.ts` — registers backend modules
+  - `packages/app/src/components/catalog/EntityPage.tsx` — injects entity page cards/routes
+  - `packages/app/src/App.tsx` — adds page imports and `<Route>` entries
+  - `packages/app/src/apis.ts` — registers API factories
+- Prints a "Next Steps" summary listing only the remaining manual steps
 
 ### 5. Configure authentication
 
@@ -66,10 +75,12 @@ platform auth add github .
 platform auth add google .
 ```
 
-After running `auth add`, follow the printed instructions to:
-- Copy the backend `index.ts` snippet
-- Copy the `App.tsx` `SignInPage` component snippet
-- Set up the IdP app registration (Azure Portal / GitHub / Google Cloud)
+After running `auth add`, the CLI automatically patches:
+- `packages/backend/src/index.ts` — registers the auth backend module
+- `packages/app/src/App.tsx` — injects the `SignInPage` component and auth API ref
+
+Set up the IdP app registration (Azure Portal / GitHub / Google Cloud) and configure
+the credentials in `app-config.local.yaml` (written by the CLI).
 
 ### 6. Configure cloud storage (optional)
 
@@ -173,6 +184,40 @@ platform plugin add argocd ./my-backstage --skip-config
 ```bash
 platform plugin remove argocd ./my-backstage
 ```
+
+---
+
+## Cloud Costs & FinOps Setup
+
+For cloud spend visibility integrated directly into Backstage:
+
+```bash
+platform init finops-backstage
+platform config init ./finops-backstage --name "FinOps IDP"
+
+# Multi-cloud cost aggregation dashboard (AWS, Azure, GCP)
+platform plugin add infrawallet ./finops-backstage
+
+# Per-team / per-entity cost breakdown (requires a CostInsightsApi implementation)
+platform plugin add cost-insights ./finops-backstage
+```
+
+**InfraWallet** — uncomment your cloud provider block in `app-config.yaml`:
+```yaml
+backend:
+  infraWallet:
+    integrations:
+      aws:
+        - name: my-aws-account
+          accountId: '123456789012'
+          assumedRoleName: InfraWalletRole
+```
+
+**Cost Insights** — replace `ExampleCostInsightsClient` in `packages/app/src/apis.ts`
+with a real implementation once ready. The mock client is wired in automatically so
+the page renders immediately.
+
+Both plugins add a `/infrawallet` and `/cost-insights` route respectively. Add sidebar entries manually in `packages/app/src/components/Root/Root.tsx`.
 
 ---
 
