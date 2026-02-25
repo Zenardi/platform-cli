@@ -302,6 +302,172 @@ Manual steps remaining:
   Docs: https://terasky-oss.github.io/backstage-plugins/plugins/crossplane/overview
 "
         }
+
+        "grafana": {
+            name: "Grafana"
+            description: "Grafana alerts and dashboards cards on entity overview pages"
+            frontend_pkg: "@backstage-community/plugin-grafana"
+            backend_pkg:  ""
+            app_config: "
+proxy:
+  '/grafana/api':
+    target: https://your-grafana.example.com/
+    headers:
+      Authorization: Bearer \${GRAFANA_TOKEN}
+
+grafana:
+  domain: https://your-grafana.example.com
+  unifiedAlerting: false
+"
+            notes: "
+Automated by CLI:
+  ✓ Frontend package installed
+  ✓ app-config.yaml updated
+  ✓ EntityPage.tsx patched (alerts + dashboards cards in overviewContent)
+
+Manual steps remaining:
+  1. Update app-config.yaml grafana.domain and proxy target to your Grafana URL.
+  2. Set GRAFANA_TOKEN environment variable.
+  3. Add entity annotation for alerts (unified alerting):
+       grafana/alert-label-selector: 'label=label-value'
+     Or for legacy alerting:
+       grafana/tag-selector: my-tag
+  4. Add entity annotation for dashboards:
+       grafana/dashboard-selector: my-service
+
+  Docs: https://github.com/backstage/community-plugins/tree/main/workspaces/grafana
+"
+        }
+
+        "holiday-tracker": {
+            name: "Holiday Tracker"
+            description: "Display holidays for any country/region using the Calendarific API"
+            frontend_pkg: "@infosys_ltd/holiday-tracker-plugin"
+            backend_pkg:  ""
+            app_config: "
+proxy:
+  endpoints:
+    '/holidays':
+      target: 'https://calendarific.com/api/v2/holidays?api_key=\${HOLIDAY_TRACKER_ACCESS_KEY}&country=\${HOLIDAY_TRACKER_LOCATION}&year=\${HOLIDAY_TRACKER_YEAR}'
+      changeOrigin: true
+"
+            notes: "
+Automated by CLI:
+  ✓ Frontend package installed
+  ✓ app-config.yaml updated
+  ✓ packages/app/src/App.tsx patched (import + /holidays route)
+
+Manual steps remaining:
+  1. Create a Calendarific account and generate an API key:
+       https://calendarific.com/
+  2. Set environment variables:
+       export HOLIDAY_TRACKER_ACCESS_KEY=your_api_key
+       export HOLIDAY_TRACKER_LOCATION=IN    # country code e.g. IN, US, GB
+       export HOLIDAY_TRACKER_YEAR=2025
+  3. Optionally add a sidebar entry pointing to /holidays.
+
+  Docs: https://github.com/Infosys/holiday-tracker-plugin/blob/main/plugins/holiday-tracker/README.md
+"
+        }
+
+        "cost-insights": {
+            name: "Cost Insights"
+            description: "Visualize, understand and optimize cloud costs per team and catalog entity"
+            frontend_pkg: "@backstage-community/plugin-cost-insights"
+            backend_pkg:  ""
+            app_config: "
+costInsights:
+  engineerCost: 200000
+  ## Optional: define cloud products for cost breakdown
+  # products:
+  #   cloudStorage:
+  #     name: Cloud Storage
+  #     icon: storage
+  ## Optional: define business metrics for comparison
+  # metrics:
+  #   dailyActiveUsers:
+  #     name: Daily Active Users
+  #     default: true
+"
+            notes: "
+Automated by CLI:
+  ✓ Frontend package installed
+  ✓ app-config.yaml updated
+  ✓ packages/app/src/apis.ts patched (ExampleCostInsightsClient factory)
+  ✓ packages/app/src/App.tsx patched (import + /cost-insights route)
+
+Manual steps remaining:
+  1. Replace ExampleCostInsightsClient in apis.ts with your real CostInsightsApi implementation.
+     Use the template as a starting point:
+       https://github.com/backstage/community-plugins/blob/main/workspaces/cost-insights/plugins/cost-insights/src/example/templates/CostInsightsClient.ts
+  2. Update costInsights.engineerCost in app-config.yaml with your org's average engineer cost.
+  3. Optionally add a sidebar entry in packages/app/src/components/Root/Root.tsx:
+       import MoneyIcon from '@material-ui/icons/MonetizationOn';
+       <SidebarItem icon={MoneyIcon} to=\"cost-insights\" text=\"Cost Insights\" />
+
+  Docs: https://github.com/backstage/community-plugins/tree/main/workspaces/cost-insights/plugins/cost-insights
+"
+        }
+
+        "infrawallet": {
+            name: "InfraWallet"
+            description: "Multi-cloud cost aggregation and visualization across AWS, Azure, GCP and more"
+            frontend_pkg: "@electrolux-oss/plugin-infrawallet"
+            backend_pkg:  "@electrolux-oss/plugin-infrawallet-backend"
+            app_config: "
+## InfraWallet frontend settings
+infraWallet:
+  settings:
+    defaultGroupBy: none        # none, account, provider, category, service, or tag:<tag_key>
+    defaultShowLastXMonths: 3   # recommended: less than 12
+
+## InfraWallet backend integrations (add your cloud account credentials)
+backend:
+  infraWallet:
+    integrations:
+      ## AWS example
+      # aws:
+      #   - name: my-aws-account
+      #     accountId: '123456789012'
+      #     assumedRoleName: InfraWalletRole
+      #     accessKeyId: \${AWS_ACCESS_KEY_ID}       # optional: only if using IAM user
+      #     secretAccessKey: \${AWS_SECRET_ACCESS_KEY} # optional: only if using IAM user
+      ## Azure example
+      # azure:
+      #   - name: my-azure-subscription
+      #     subscriptionId: \${AZURE_SUBSCRIPTION_ID}
+      #     tenantId: \${AZURE_TENANT_ID}
+      #     clientId: \${AZURE_CLIENT_ID}
+      #     clientSecret: \${AZURE_CLIENT_SECRET}
+      ## GCP example
+      # gcp:
+      #   - name: my-gcp-project
+      #     keyFilePath: /path/to/service-account.json
+      #     projectId: my-gcp-project
+      #     datasetId: billing_dataset
+      #     tableId: gcp_billing_export_v1_XXXXXX
+"
+            notes: "
+Automated by CLI:
+  ✓ Frontend package installed
+  ✓ Backend package installed
+  ✓ app-config.yaml updated
+  ✓ packages/backend/src/index.ts patched
+  ✓ packages/app/src/App.tsx patched (import + /infrawallet route)
+
+Manual steps remaining:
+  1. Uncomment and fill in your cloud provider credentials in app-config.yaml
+     under backend.infraWallet.integrations (AWS, Azure, GCP, etc.)
+  2. For AWS: create an IAM role with ce:GetCostAndUsage and ce:GetTags permissions.
+  3. For Azure: register an app and assign 'Cost Management Reader' on the subscription.
+  4. For GCP: export billing to BigQuery and create a service account with BigQuery roles.
+  5. Optionally add a sidebar entry in packages/app/src/components/Root/Root.tsx:
+       import { InfraWalletIcon } from '@electrolux-oss/plugin-infrawallet';
+       <SidebarItem icon={InfraWalletIcon} to=\"infrawallet\" text=\"InfraWallet\" />
+
+  Docs: https://opensource.electrolux.one/infrawallet/
+"
+        }
     }
 }
 
@@ -551,9 +717,47 @@ def patch-entity-page-crossplane-resources [instance_path: string] {
 }
 
 # Dispatch apis.ts patching to the appropriate plugin handler
+def patch-apis-cost-insights [instance_path: string] {
+    let apis_path = ($instance_path + "/packages/app/src/apis.ts")
+    if not ($apis_path | path exists) {
+        utils print-warning "packages/app/src/apis.ts not found — skipping"
+        return
+    }
+
+    mut content = (open --raw $apis_path)
+    mut patched = false
+
+    # 1. Import costInsightsApiRef + ExampleCostInsightsClient
+    if not ($content | str contains "costInsightsApiRef") {
+        let cost_import = "import { costInsightsApiRef, ExampleCostInsightsClient } from '@backstage-community/plugin-cost-insights';\n"
+        $content = ($content | str replace "\nexport const apis" ($cost_import + "\nexport const apis"))
+        $patched = true
+    }
+
+    # 2. Factory entry in the apis array (before closing ];)
+    if not ($content | str contains "costInsightsApiRef,") {
+        let factory = "  createApiFactory({
+    api: costInsightsApiRef,
+    deps: {},
+    factory: () => new ExampleCostInsightsClient(),
+  }),
+"
+        $content = ($content | str replace "\n];\n" ($factory + "\n];\n"))
+        $patched = true
+    }
+
+    if $patched {
+        $content | save --force $apis_path
+        utils print-success "packages/app/src/apis.ts updated (CostInsights API factory)"
+    } else {
+        utils print-info "apis.ts already has CostInsights API factory"
+    }
+}
+
 def patch-apis-ts [instance_path: string, plugin_name: string] {
     match $plugin_name {
         "crossplane-resources" => { patch-apis-crossplane-resources $instance_path }
+        "cost-insights"        => { patch-apis-cost-insights        $instance_path }
         _ => {}
     }
 }
@@ -636,6 +840,44 @@ def patch-entity-page-github-actions [instance_path: string] {
 }
 
 # Dispatch EntityPage.tsx patching to the appropriate plugin handler
+# Patch EntityPage.tsx with Grafana alerts and dashboards cards in overviewContent
+def patch-entity-page-grafana [instance_path: string] {
+    let ep_path = ($instance_path + "/packages/app/src/components/catalog/EntityPage.tsx")
+    if not ($ep_path | path exists) {
+        utils print-warning "EntityPage.tsx not found — skipping"
+        return
+    }
+
+    mut content = (open --raw $ep_path)
+    mut patched = false
+
+    # 1. Import
+    if not ($content | str contains "from '@backstage-community/plugin-grafana'") {
+        let imports = "import { EntityGrafanaAlertsCard, EntityGrafanaDashboardsCard } from '@backstage-community/plugin-grafana';\n"
+        if ($content | str contains "\nconst cicdContent") {
+            $content = ($content | str replace "\nconst cicdContent" ($imports + "\nconst cicdContent"))
+            $patched = true
+        }
+    }
+
+    # 2. Cards in overviewContent (before its closing </Grid>)
+    let overview_close = "\n  </Grid>\n);\n\nconst serviceEntityPage = ("
+    if not ($content | str contains "<EntityGrafanaAlertsCard") {
+        if ($content | str contains $overview_close) {
+            let cards = "\n    <Grid item md={6} xs={12}>\n      <EntityGrafanaAlertsCard />\n    </Grid>\n    <Grid item md={6} xs={12}>\n      <EntityGrafanaDashboardsCard />\n    </Grid>"
+            $content = ($content | str replace $overview_close ($cards + $overview_close))
+            $patched = true
+        }
+    }
+
+    if $patched {
+        $content | save --force $ep_path
+        utils print-success "EntityPage.tsx patched (Grafana alerts + dashboards cards)"
+    } else {
+        utils print-info "EntityPage.tsx already up to date for Grafana"
+    }
+}
+
 def patch-entity-page [instance_path: string, plugin_name: string] {
     match $plugin_name {
         "techdocs"             => { patch-entity-page-techdocs             $instance_path }
@@ -643,9 +885,133 @@ def patch-entity-page [instance_path: string, plugin_name: string] {
         "azure-devops"         => { patch-entity-page-azure-devops          $instance_path }
         "github-actions"       => { patch-entity-page-github-actions        $instance_path }
         "crossplane-resources" => { patch-entity-page-crossplane-resources  $instance_path }
+        "grafana"              => { patch-entity-page-grafana               $instance_path }
         _ => {
             utils print-info $"EntityPage.tsx patching for ($plugin_name) requires manual steps — see 'Next Steps' above"
         }
+    }
+}
+
+# Patch packages/app/src/App.tsx to add the HolidayTrackerPage import and route
+def patch-app-tsx-holiday-tracker [instance_path: string] {
+    let app_path = ($instance_path + "/packages/app/src/App.tsx")
+    if not ($app_path | path exists) {
+        utils print-warning "packages/app/src/App.tsx not found — skipping"
+        return
+    }
+
+    mut content = (open --raw $app_path)
+    mut patched = false
+
+    # 1. Import (inject before `const app = createApp`)
+    if not ($content | str contains "from '@infosys_ltd/holiday-tracker-plugin'") {
+        let import_line = "import { HolidayTrackerPage } from '@infosys_ltd/holiday-tracker-plugin';\n"
+        if ($content | str contains "\nconst app = createApp") {
+            $content = ($content | str replace "\nconst app = createApp" ($import_line + "\nconst app = createApp"))
+            $patched = true
+        }
+    }
+
+    # 2. Route (inject before `</FlatRoutes>`)
+    let flat_routes_close = "\n  </FlatRoutes>\n);"
+    if not ($content | str contains "<HolidayTrackerPage") {
+        if ($content | str contains $flat_routes_close) {
+            let route = "\n    <Route path=\"/holidays\" element={<HolidayTrackerPage />} />"
+            $content = ($content | str replace $flat_routes_close ($route + $flat_routes_close))
+            $patched = true
+        }
+    }
+
+    if $patched {
+        $content | save --force $app_path
+        utils print-success "packages/app/src/App.tsx patched (HolidayTrackerPage import + route)"
+    } else {
+        utils print-info "App.tsx already up to date for Holiday Tracker"
+    }
+}
+
+# Patch packages/app/src/App.tsx to add the CostInsightsPage import and route
+def patch-app-tsx-cost-insights [instance_path: string] {
+    let app_path = ($instance_path + "/packages/app/src/App.tsx")
+    if not ($app_path | path exists) {
+        utils print-warning "packages/app/src/App.tsx not found — skipping"
+        return
+    }
+
+    mut content = (open --raw $app_path)
+    mut patched = false
+
+    # 1. Import (inject before `const app = createApp`)
+    if not ($content | str contains "from '@backstage-community/plugin-cost-insights'") {
+        let import_line = "import { CostInsightsPage } from '@backstage-community/plugin-cost-insights';\n"
+        if ($content | str contains "\nconst app = createApp") {
+            $content = ($content | str replace "\nconst app = createApp" ($import_line + "\nconst app = createApp"))
+            $patched = true
+        }
+    }
+
+    # 2. Route (inject before `</FlatRoutes>`)
+    let flat_routes_close = "\n  </FlatRoutes>\n);"
+    if not ($content | str contains "<CostInsightsPage") {
+        if ($content | str contains $flat_routes_close) {
+            let route = "\n    <Route path=\"/cost-insights\" element={<CostInsightsPage />} />"
+            $content = ($content | str replace $flat_routes_close ($route + $flat_routes_close))
+            $patched = true
+        }
+    }
+
+    if $patched {
+        $content | save --force $app_path
+        utils print-success "packages/app/src/App.tsx patched (CostInsightsPage import + route)"
+    } else {
+        utils print-info "App.tsx already up to date for Cost Insights"
+    }
+}
+
+# Patch packages/app/src/App.tsx to add the InfraWalletPage import and route
+def patch-app-tsx-infrawallet [instance_path: string] {
+    let app_path = ($instance_path + "/packages/app/src/App.tsx")
+    if not ($app_path | path exists) {
+        utils print-warning "packages/app/src/App.tsx not found — skipping"
+        return
+    }
+
+    mut content = (open --raw $app_path)
+    mut patched = false
+
+    # 1. Import (inject before `const app = createApp`)
+    if not ($content | str contains "from '@electrolux-oss/plugin-infrawallet'") {
+        let import_line = "import { InfraWalletPage } from '@electrolux-oss/plugin-infrawallet';\n"
+        if ($content | str contains "\nconst app = createApp") {
+            $content = ($content | str replace "\nconst app = createApp" ($import_line + "\nconst app = createApp"))
+            $patched = true
+        }
+    }
+
+    # 2. Route (inject before `</FlatRoutes>`)
+    let flat_routes_close = "\n  </FlatRoutes>\n);"
+    if not ($content | str contains "<InfraWalletPage") {
+        if ($content | str contains $flat_routes_close) {
+            let route = "\n    <Route path=\"/infrawallet\" element={<InfraWalletPage />} />"
+            $content = ($content | str replace $flat_routes_close ($route + $flat_routes_close))
+            $patched = true
+        }
+    }
+
+    if $patched {
+        $content | save --force $app_path
+        utils print-success "packages/app/src/App.tsx patched (InfraWalletPage import + route)"
+    } else {
+        utils print-info "App.tsx already up to date for InfraWallet"
+    }
+}
+
+def patch-app-tsx [instance_path: string, plugin_name: string] {
+    match $plugin_name {
+        "holiday-tracker" => { patch-app-tsx-holiday-tracker $instance_path }
+        "cost-insights"   => { patch-app-tsx-cost-insights   $instance_path }
+        "infrawallet"     => { patch-app-tsx-infrawallet      $instance_path }
+        _ => {}
     }
 }
 
@@ -744,6 +1110,7 @@ export def add-plugin [
     if not $backend_only {
         patch-apis-ts $instance_path $plugin_name
         patch-entity-page $instance_path $plugin_name
+        patch-app-tsx $instance_path $plugin_name
     }
 
     utils print-success $"Plugin ($plugin.name) installation complete"
