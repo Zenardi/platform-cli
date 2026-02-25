@@ -1,0 +1,37 @@
+{
+  "private": true,
+  "name": "backstage",
+  "version": "0.0.1",
+  "description": "Backstage Internal Developer Platform",
+  "engines": {
+    "node": "18.17.0"
+  },
+  "scripts": {
+    "dev": "lerna run start --scope @backstage/cli --scope @internal/backstage-app --stream --no-bail",
+    "start": "yarn workspace @internal/backstage-app start",
+    "build": "lerna run build --scope @backstage/cli --scope @internal/backstage-app",
+    "build:api": "yarn workspace @internal/backstage-app build:api",
+    "build:all": "lerna run build",
+    "lint": "lerna run lint --since origin/main",
+    "lint:all": "lerna run lint",
+    "test": "lerna run test --since origin/main",
+    "test:all": "lerna run test",
+    "clean": "lerna run clean --all && rm -rf dist",
+    "install:all": "yarn install",
+    "tsc": "tsc"
+  },
+  "workspaces": {
+    "packages": [
+      "packages/*"
+    ],
+    "nohoist": [
+      "@backstage/cli"
+    ]
+  },
+  "devDependencies": {
+    "lerna": "^5.0.0"
+  },
+  "resolutions": {
+    "typescript": "~4.9.5"
+  }
+}
