@@ -3,47 +3,107 @@
 A Nushell CLI for scaffolding and configuring production-ready [Backstage](https://backstage.io) instances.
 Automates directory scaffolding, plugin installation, auth provider setup, and catalog entity creation.
 
+---
+
 ## Prerequisites
 
-| Tool | Version |
-|------|---------|
-| [Nushell](https://www.nushell.sh/book/installation.html) | v0.84.0+ |
-| Node.js | v18.17.0+ |
-| Yarn | any |
-| Git | optional |
+| Tool | Version | Notes |
+|------|---------|-------|
+| [Nushell](https://www.nushell.sh/book/installation.html) | v0.100.0+ | Required |
+| Node.js | v18.17.0+ | Required for Backstage |
+| Yarn | any | Required for Backstage |
+| Git | any | Optional |
+
+---
 
 ## Installation
 
+### 1. Clone the repository
+
 ```bash
-cd platform/
+git clone https://github.com/Zenardi/platform-cli.git
+cd platform-cli
+```
+
+### 2. Run the setup script
+
+```nushell
 nu setup.nu
 ```
 
-This copies the CLI to `~/.config/nushell/platform/` and adds `alias platform = nu …/main.nu` to your Nushell env.
+This will:
+- Copy the CLI files to `~/.config/nushell/platform/`
+- Add `alias platform = nu ~/.config/nushell/platform/main.nu` to your Nushell env file
 
-Reload your shell or run:
+### 3. Reload your shell
+
+In your **Nushell** session:
+
 ```nushell
 source ~/.config/nushell/env.nu
+```
+
+Or simply restart your terminal.
+
+### 4. Verify the installation
+
+```nushell
+platform --help
+```
+
+### Run without installing
+
+You can also run the CLI directly without setup:
+
+```nushell
+nu main.nu --help
+nu main.nu init my-backstage
+```
+
+---
+
+## Setting Environment Variables (Nushell)
+
+Auth providers require credentials. In Nushell, set environment variables for your current session:
+
+```nushell
+$env.AZURE_CLIENT_ID     = "your-client-id"
+$env.AZURE_CLIENT_SECRET = "your-client-secret"
+$env.AZURE_TENANT_ID     = "your-tenant-id"
+```
+
+To persist them across sessions, add them to `~/.config/nushell/env.nu`:
+
+```nushell
+# ~/.config/nushell/env.nu
+$env.AZURE_CLIENT_ID     = "your-client-id"
+$env.AZURE_CLIENT_SECRET = "your-client-secret"
+$env.AZURE_TENANT_ID     = "your-tenant-id"
 ```
 
 ---
 
 ## Quick Start
 
-```bash
-# 1. Scaffold a new Backstage instance (runs npx @backstage/create-app@latest)
+```nushell
+# 1. Scaffold a new Backstage instance
 platform init my-backstage
 
-# 2. Add plugins — installs packages, patches app-config.yaml and TypeScript source files
+# 2. Add plugins
 platform plugin add kubernetes    ./my-backstage
 platform plugin add techdocs      ./my-backstage
 platform plugin add grafana       ./my-backstage
-platform plugin add cost-insights ./my-backstage
 
-# 3. Add Microsoft Azure AD auth (auto-patches index.ts and App.tsx)
+# 3. Add Microsoft Azure AD auth (no guest sign-in)
+$env.AZURE_CLIENT_ID     = "your-client-id"
+$env.AZURE_CLIENT_SECRET = "your-client-secret"
+$env.AZURE_TENANT_ID     = "your-tenant-id"
 platform auth add microsoft ./my-backstage --no-guest
 
-# 4. Validate
+# 4. Create catalog entities
+platform entity create my-service --type component --owner platform-team
+
+# 5. Validate
 platform validate ./my-backstage
 ```
 
@@ -54,24 +114,25 @@ platform validate ./my-backstage
 ### `platform init`
 
 Scaffold a new Backstage instance using the official Backstage scaffolder.
-Runs `npx @backstage/create-app@latest` under the hood — produces a real, complete Backstage project.
+Runs `npx @backstage/create-app@latest` — produces a complete Backstage project.
 
 ```
 platform init <name> [--path <parent-dir>] [--skip-install]
 ```
 
-```bash
+```nushell
 # Create my-backstage/ in the current directory
 platform init my-backstage
 
 # Create in a specific parent directory
 platform init my-backstage --path ~/projects
 
-# Skip yarn install (useful in CI — run yarn install manually after)
+# Skip yarn install (useful in CI)
 platform init my-backstage --skip-install
 ```
 
-What `@backstage/create-app` generates:
+Generated project structure:
+
 ```
 my-backstage/
 ├── packages/
@@ -87,34 +148,12 @@ my-backstage/
 
 ---
 
-### `platform config`
-
-```
-platform config init     <instance-path> [--name <title>]
-platform config validate <instance-path>
-
-platform config set-database <instance-path>
-  --db-type    postgresql|mysql|mariadb
-  --host       <host>
-  --port       <port>
-  --user       <user>
-  --password   <password>
-  --database   <db-name>
-
-platform config set-storage <instance-path>
-  --provider   aws|azure|gcp|local
-  --bucket     <bucket>
-  --region     <region>          # cloud providers only
-```
-
----
-
 ### `platform plugin`
 
 ```
 platform plugin list
-platform plugin info <plugin-id>
-platform plugin add  <plugin-id> <instance-path> [--frontend-only] [--backend-only] [--skip-config]
+platform plugin info   <plugin-id>
+platform plugin add    <plugin-id> <instance-path> [--frontend-only] [--backend-only] [--skip-config]
 platform plugin remove <plugin-id> <instance-path>
 ```
 
@@ -135,14 +174,14 @@ platform plugin remove <plugin-id> <instance-path>
 | `cost-insights` | Cost Insights | frontend only | `apis.ts`, `App.tsx` |
 | `infrawallet` | InfraWallet | frontend + backend | `index.ts`, `App.tsx` |
 
-```bash
-# Examples
+```nushell
+platform plugin list
+platform plugin info kubernetes
 platform plugin add kubernetes           ./my-backstage
 platform plugin add kubernetes-ingestor  ./my-backstage
 platform plugin add crossplane-resources ./my-backstage
 platform plugin add grafana              ./my-backstage
 platform plugin add cost-insights        ./my-backstage
-platform plugin add infrawallet          ./my-backstage
 platform plugin add argocd               ./my-backstage --skip-config
 ```
 
@@ -151,6 +190,7 @@ platform plugin add argocd               ./my-backstage --skip-config
 ### `platform auth`
 
 Install and configure an OAuth / identity provider.
+Patches `packages/backend/src/index.ts` and `packages/app/src/App.tsx` automatically.
 
 ```
 platform auth list
@@ -159,7 +199,7 @@ platform auth add   <provider> <instance-path>
   [--client-id     <id>]
   [--client-secret <secret>]
   [--tenant-id     <id>]       # Microsoft only
-  [--no-guest]                 # Disable guest sign-in
+  [--no-guest]                 # Disable guest sign-in (force IdP login)
   [--skip-config]
   [--skip-install]
 ```
@@ -172,18 +212,20 @@ platform auth add   <provider> <instance-path>
 | `github` | GitHub OAuth | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` |
 | `google` | Google OAuth | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` |
 
-```bash
+```nushell
 # Microsoft Azure AD — require login, no guest option
+$env.AZURE_CLIENT_ID = "..."; $env.AZURE_CLIENT_SECRET = "..."; $env.AZURE_TENANT_ID = "..."
 platform auth add microsoft ./my-backstage --no-guest
 
-# With credentials baked into app-config.yaml
+# Microsoft — with credentials baked in (written to app-config.local.yaml)
 platform auth add microsoft ./my-backstage \
   --client-id abc123 --client-secret xyz --tenant-id tid --no-guest
 
-# GitHub — allow guest sign-in
+# GitHub OAuth
+$env.GITHUB_CLIENT_ID = "..."; $env.GITHUB_CLIENT_SECRET = "..."
 platform auth add github ./my-backstage
 
-# Preview what the config + code looks like
+# Preview what config + code changes look like before applying
 platform auth info microsoft --no-guest
 ```
 
@@ -192,7 +234,29 @@ platform auth info microsoft --no-guest
 | | Default (guest allowed) | `--no-guest` |
 |-|------------------------|--------------|
 | `SignInPage` prop | `providers={['guest', {...}]}` | `auto` + `provider={{...}}` |
-| Effect | "Sign in as Guest" button visible | Auto-redirects to IdP, no guest |
+| Effect | "Sign in as Guest" button visible | Auto-redirects to IdP, no guest button |
+
+---
+
+### `platform config`
+
+```
+platform config init     <instance-path> [--name <title>]
+platform config validate <instance-path>
+
+platform config set-database <instance-path>
+  --db-type    postgresql|mysql|mariadb
+  --host       <host>
+  --port       <port>
+  --user       <user>
+  --password   <password>
+  --database   <db-name>
+
+platform config set-storage <instance-path>
+  --provider   aws|azure|gcp|local
+  --bucket     <bucket>
+  --region     <region>
+```
 
 ---
 
@@ -207,8 +271,8 @@ platform entity validate    <entity-path>
 
 **Entity types:** `component`, `api`, `resource`, `system`, `group`, `user`
 
-```bash
-platform entity create "my-system" --type system --owner platform-team
+```nushell
+platform entity create "my-system"   --type system    --owner platform-team
 platform entity create "api-service" --type component --system my-system --owner platform-team
 platform entity create-bulk ./my-backstage --template team-structure
 platform entity validate ./my-backstage/catalog-entities/api-service.yaml
@@ -218,9 +282,9 @@ platform entity validate ./my-backstage/catalog-entities/api-service.yaml
 
 ### `platform validate`
 
-Run a full sanity-check on a Backstage instance (files, config, entities).
+Run a sanity-check on a Backstage instance (files, config, entities).
 
-```bash
+```nushell
 platform validate ./my-backstage
 ```
 
@@ -230,33 +294,9 @@ platform validate ./my-backstage
 
 Prepare an instance for production deployment.
 
-```bash
+```nushell
 platform deploy ./my-backstage
 platform deploy ./my-backstage --environment staging
-```
-
----
-
-## Project Structure
-
-```
-my-backstage/
-├── app/src/
-│   ├── components/
-│   ├── pages/
-│   └── api/
-├── packages/
-│   ├── backend/        # yarn --cwd packages/backend add <pkg>
-│   ├── frontend/
-│   └── cli/
-├── plugins/            # custom plugins
-├── catalog-entities/   # Backstage YAML entities
-├── docs/
-├── .github/workflows/
-├── app-config.yaml     # patched by platform commands
-├── package.json
-├── tsconfig.json
-└── .gitignore
 ```
 
 ---
@@ -281,8 +321,32 @@ Supported kinds: `Component`, `API`, `Resource`, `System`, `Group`, `User`, `Loc
 
 ---
 
+## Project Structure
+
+```
+platform-cli/
+├── main.nu          # CLI entry point
+├── setup.nu         # One-time installer
+├── config.nu        # Global constants (versions, colors)
+├── version.txt      # Current version
+├── modules/
+│   ├── scaffolding.nu
+│   ├── plugins.nu
+│   ├── auth.nu
+│   ├── entities.nu
+│   ├── app-config.nu
+│   └── utils.nu
+├── templates/
+├── tests/
+└── docs/
+    ├── USAGE.md
+    └── EXAMPLES.md
+```
+
+---
+
 ## See Also
 
-- [USAGE.md](./USAGE.md) — step-by-step workflows
-- [EXAMPLES.md](./EXAMPLES.md) — complete scenario scripts
+- [USAGE.md](./docs/USAGE.md) — step-by-step workflows
+- [EXAMPLES.md](./docs/EXAMPLES.md) — complete scenario scripts
 - [Backstage docs](https://backstage.io/docs)
