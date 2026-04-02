@@ -232,10 +232,10 @@ export def validate [instance_path: string] {
             utils print-success $check.name
         } else {
             if $check.critical {
-                utils print-error $check.name
+                utils print-error $"($check.name)  ← not found: ($check.path | path expand)"
                 $valid = false
             } else {
-                utils print-warning $check.name
+                utils print-warning $"($check.name)  ← not found: ($check.path | path expand)"
             }
         }
     }
