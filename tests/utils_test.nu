@@ -110,4 +110,3 @@ def main [] {
     ]
 }
 
-main

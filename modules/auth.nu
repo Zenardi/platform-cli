@@ -140,54 +140,81 @@ Google Cloud Console setup:
 }
 
 # ---------------------------------------------------------------------------
-# Generate the App.tsx SignInPage snippet.
+# Build the createFrontendModule block for the new declarative frontend system
+# (createApp from @backstage/frontend-defaults, Backstage v1.24+).
+# ---------------------------------------------------------------------------
+def build-sign-in-module [auth: record, no_guest: bool, module_name: string] {
+    let sign_in_content = if $no_guest {
+        $"          <SignInPage
+            \{...props\}
+            auto
+            provider=\{\{
+              id: '($auth.provider_id)',
+              title: '($auth.provider_title)',
+              message: '($auth.provider_msg)',
+              apiRef: ($auth.api_ref),
+            \}\}
+          />"
+    } else {
+        $"          <SignInPage
+            \{...props\}
+            providers=\{[
+              'guest',
+              \{
+                id: '($auth.provider_id)',
+                title: '($auth.provider_title)',
+                message: '($auth.provider_msg)',
+                apiRef: ($auth.api_ref),
+              \},
+            ]\}
+          />"
+    }
+
+    (
+        "const " + $module_name + " = createFrontendModule({\n" +
+        "  pluginId: 'app',\n" +
+        "  extensions: [\n" +
+        "    SignInPageBlueprint.make({\n" +
+        "      params: {\n" +
+        "        loader: async () => props => (\n" +
+        $sign_in_content + "\n" +
+        "        ),\n" +
+        "      },\n" +
+        "    }),\n" +
+        "  ],\n" +
+        "});"
+    )
+}
+
+# ---------------------------------------------------------------------------
+# Generate the App.tsx SignInPage snippet for display / instructions.
 # --no-guest  → single `provider` prop + `auto` (forces IdP login, no guest option)
 # default     → `providers` array including 'guest' (user can choose guest or IdP)
 # ---------------------------------------------------------------------------
 def build-frontend-code [auth: record, no_guest: bool] {
-    let provider_block = $"        \{
-          id: '($auth.provider_id)',
-          title: '($auth.provider_title)',
-          message: '($auth.provider_msg)',
-          apiRef: ($auth.api_ref),
-        \}"
-
-    let sign_in_page = if $no_guest {
-        $"    <SignInPage
-      \{...props\}
-      auto
-      provider=\{
-($provider_block)
-      \}
-    />"
-    } else {
-        $"    <SignInPage
-      \{...props\}
-      providers=\{[
-        'guest',
-($provider_block),
-      ]\}
-    />"
-    }
-
+    let module_name = ($auth.api_ref | str replace "AuthApiRef" "SignInModule")
+    let sign_in_module_code = (build-sign-in-module $auth $no_guest $module_name)
     let guest_note = if $no_guest {
-        "  // Guest sign-in is DISABLED — users must authenticate via the provider."
+        "// Guest sign-in is DISABLED — users must authenticate via the provider."
     } else {
-        "  // Guest sign-in is enabled. Pass --no-guest to require authentication."
+        "// Guest sign-in is enabled. Pass --no-guest to require authentication."
     }
 
-    $"
-// In packages/app/src/App.tsx — add to createApp\(\{ components: \{ ... \} \}\)
-import \{ ($auth.api_ref) \} from '@backstage/core-plugin-api';
-import \{ SignInPage \} from '@backstage/core-components';
-($guest_note)
-
-components: \{
-  SignInPage: props => \(
-($sign_in_page)
-  \),
-\},
-"
+    (
+        "// In packages/app/src/App.tsx\n\n" +
+        "// 1. Add these imports at the top:\n" +
+        "import { createFrontendModule } from '@backstage/frontend-plugin-api';\n" +
+        "import { SignInPageBlueprint } from '@backstage/plugin-app-react';\n" +
+        "import { " + $auth.api_ref + " } from '@backstage/core-plugin-api';\n" +
+        "import { SignInPage } from '@backstage/core-components';\n" +
+        $guest_note + "\n\n" +
+        "// 2. Declare the sign-in module before createApp:\n" +
+        $sign_in_module_code + "\n\n" +
+        "// 3. Add the module to the features array in createApp:\n" +
+        "// export default createApp({\n" +
+        "//   features: [...existingFeatures, " + $module_name + "],\n" +
+        "// });"
+    )
 }
 
 
@@ -254,7 +281,9 @@ def patch-backend-index [instance_path: string, auth: record] {
     utils print-success "packages/backend/src/index.ts updated"
 }
 
-# Patch packages/app/src/App.tsx to add the import and SignInPage components block
+# Patch packages/app/src/App.tsx to add the import and SignInPage components block.
+# Supports both the new declarative frontend system (@backstage/frontend-defaults, v1.24+)
+# and the legacy system (@backstage/app-defaults / @backstage/core-app-api).
 def patch-frontend-app [instance_path: string, auth: record, no_guest: bool] {
     let app_path = ($instance_path + "/packages/app/src/App.tsx")
     if not ($app_path | path exists) {
@@ -265,31 +294,74 @@ def patch-frontend-app [instance_path: string, auth: record, no_guest: bool] {
     let content = (open --raw $app_path)
     mut new_content = $content
 
-    # 1. Add the provider apiRef import before createApp if not already present
-    if not ($new_content | str contains $auth.api_ref) {
-        let import_line = $"import \{ ($auth.api_ref) \} from '@backstage/core-plugin-api';"
-        if ($new_content | str contains "const app = createApp({") {
-            $new_content = ($new_content | str replace "const app = createApp({" ($import_line + "\n\nconst app = createApp({"))
-        } else {
-            utils print-warning "Could not locate createApp in App.tsx — add the import manually:"
-            utils print-info    $"  ($import_line)"
-        }
-    }
+    # Detect which frontend system is in use
+    let is_new_system = ($content | str contains "from '@backstage/frontend-defaults'")
 
-    # 2. Inject the SignInPage components block inside createApp if not already present
-    if not ($new_content | str contains "SignInPage: props =>") {
-        let components_block = (build-components-insert $auth $no_guest)
-        # The createApp block ends with the bindRoutes close (2-space indent) then });
-        let close_marker = "  },\n});"
-        if ($new_content | str contains $close_marker) {
-            $new_content = ($new_content | str replace $close_marker ("  },\n" + $components_block + "\n});"))
+    if $is_new_system {
+        # ── New declarative frontend system ────────────────────────────────────
+        # Uses SignInPageBlueprint.make() inside createFrontendModule(), added to features[].
+        let module_name = ($auth.api_ref | str replace "AuthApiRef" "SignInModule")
+
+        # 1. Inject imports + module constant before createApp if not already present
+        if not ($content | str contains $auth.api_ref) {
+            let imports = (
+                "import { createFrontendModule } from '@backstage/frontend-plugin-api';\n" +
+                "import { SignInPageBlueprint } from '@backstage/plugin-app-react';\n" +
+                "import { " + $auth.api_ref + " } from '@backstage/core-plugin-api';\n" +
+                "import { SignInPage } from '@backstage/core-components';"
+            )
+            let sign_in_module = (build-sign-in-module $auth $no_guest $module_name)
+            $new_content = ($new_content | str replace "export default createApp({" ($imports + "\n\n" + $sign_in_module + "\n\nexport default createApp({"))
         } else {
-            utils print-warning "Could not locate createApp closing in App.tsx — add the components block manually"
-            utils print-info    "Inside createApp({ ... }), add:"
-            print $components_block
+            utils print-info "App.tsx already has auth imports — skipping"
         }
+
+        # 2. Add module to features array if not already registered
+        if not ($content | str contains "SignInPageBlueprint") {
+            $new_content = ($new_content | str replace --regex "features: \\[([^\\]]*)\\]" ("features: [$1, " + $module_name + "]"))
+        } else {
+            utils print-info "App.tsx already includes sign-in module — skipping"
+        }
+
     } else {
-        utils print-info "App.tsx already has a SignInPage component — skipping"
+        # ── Legacy frontend system ─────────────────────────────────────────────
+        # Uses components: { SignInPage: props => (...) } inside createApp({}).
+
+        # 1. Add the provider apiRef import and SignInPage import before createApp
+        if not ($new_content | str contains $auth.api_ref) {
+            let import_line = (
+                "import { " + $auth.api_ref + " } from '@backstage/core-plugin-api';\n" +
+                "import { SignInPage } from '@backstage/core-components';"
+            )
+            if ($new_content | str contains "const app = createApp({") {
+                $new_content = ($new_content | str replace "const app = createApp({" ($import_line + "\n\nconst app = createApp({"))
+            } else if ($new_content | str contains "export default createApp({") {
+                $new_content = ($new_content | str replace "export default createApp({" ($import_line + "\n\nexport default createApp({"))
+            } else {
+                utils print-warning "Could not locate createApp in App.tsx — add the import manually:"
+                utils print-info    $"  ($import_line)"
+            }
+        }
+
+        # 2. Inject the SignInPage components block inside createApp
+        if not ($new_content | str contains "SignInPage: props =>") {
+            let components_block = (build-components-insert $auth $no_guest)
+            # Try old-style closing (has bindRoutes or other sections)
+            let close_marker_old = "  },\n});"
+            # Try new-style closing (simple createApp with no extra sections)
+            let close_marker_new = "\n});"
+            if ($new_content | str contains $close_marker_old) {
+                $new_content = ($new_content | str replace $close_marker_old ("  },\n" + $components_block + "\n});"))
+            } else if ($new_content | str contains $close_marker_new) {
+                $new_content = ($new_content | str replace $close_marker_new ("\n" + $components_block + "\n});"))
+            } else {
+                utils print-warning "Could not locate createApp closing in App.tsx — add the components block manually"
+                utils print-info    "Inside createApp({ ... }), add:"
+                print $components_block
+            }
+        } else {
+            utils print-info "App.tsx already has a SignInPage component — skipping"
+        }
     }
 
     $new_content | save --force $app_path
@@ -370,9 +442,10 @@ export def add-auth-provider [
             $config_snippet = ($config_snippet | str replace --all "${AZURE_TENANT_ID}" $tenant_id)
         }
 
-        # Disable guest/unauthenticated access
+        # In dev, dangerouslyDisableDefaultAuthPolicy: true allows internal plugin API calls
+        # without service-to-service tokens, while still requiring user sign-in via the provider.
         if $no_guest {
-            $config_snippet = ($config_snippet | str replace "auth:" "auth:\n  dangerouslyDisableDefaultAuthPolicy: false")
+            $config_snippet = ($config_snippet | str replace "auth:" "auth:\n  dangerouslyDisableDefaultAuthPolicy: true")
         }
 
         # Read existing app-config.local.yaml or initialise a fresh one
@@ -383,10 +456,30 @@ export def add-auth-provider [
             $existing_local = "# Backstage local development overrides — keep out of version control\n"
         }
 
-        if ($existing_local | str contains "auth:") {
-            utils print-warning "app-config.local.yaml already has an 'auth:' section"
-            utils print-info    "Merge the following snippet manually:"
-            print $config_snippet
+        # Check if the specific provider is already configured (not just any auth: section)
+        let provider_key = $"($provider):"
+        let already_has_provider = ($existing_local | str contains $provider_key)
+
+        if $already_has_provider {
+            utils print-info $"app-config.local.yaml already has '($provider):' — skipping config write"
+        } else if ($existing_local | str contains "auth:") {
+            # auth: section exists but this provider is missing — inject provider block under providers:
+            # Extract just the provider sub-block from the snippet (lines under "providers:")
+            let provider_lines = ($config_snippet | lines | skip while {|l| not ($l | str contains "providers:")} | skip 1)
+            let provider_indent = "    "
+            let injected = ($provider_lines | str join "\n")
+
+            if ($existing_local | str contains "providers:") {
+                # Append after the existing providers: key
+                let new_local = ($existing_local | str replace "providers:" ($"providers:\n($injected)"))
+                $new_local | save --force $local_config
+                utils print-success $"Added ($auth.name) provider to existing auth section in app-config.local.yaml"
+            } else {
+                # auth: exists but no providers: — append the full provider block
+                let new_local = ($existing_local + $"\n# --- ($auth.name) auth provider ---\n" + $config_snippet)
+                $new_local | save --force $local_config
+                utils print-success "app-config.local.yaml updated with auth configuration"
+            }
         } else {
             ($existing_local + $"\n# --- ($auth.name) auth provider ---\n" + $config_snippet) | save --force $local_config
             utils print-success "app-config.local.yaml updated with auth configuration"
@@ -397,8 +490,24 @@ export def add-auth-provider [
     print ""
     utils print-header "Required Environment Variables"
     $auth.env_vars | each {|var|
-        print $"  export ($var)=<your-value>"
+        let val = (do { ^bash -c $"echo -n $($var)" } | complete).stdout
+        if ($val | is-empty) {
+            print $"  ❌ ($var)  — NOT SET"
+        } else {
+            print $"  ✅ ($var)  — set"
+        }
     } | ignore
+    let missing_vars = ($auth.env_vars | where {|var|
+        (do { ^bash -c $"echo -n $($var)" } | complete).stdout | is-empty
+    })
+    if ($missing_vars | is-not-empty) {
+        print ""
+        utils print-warning "One or more required environment variables are not set."
+        utils print-info    "Set them before starting the backend, for example:"
+        $missing_vars | each {|var|
+            print $"    export ($var)=<your-value>"
+        } | ignore
+    }
 
     # ── Code changes needed ───────────────────────────────────────────────────
     print ""
