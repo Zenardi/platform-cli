@@ -1,5 +1,15 @@
 # configuration and defaults for platform CLI
 
+# Read the CLI version from version.txt (kept in sync by release-please)
+export def get-version [] {
+    let version_file = ($env.FILE_PWD + "/version.txt")
+    if ($version_file | path exists) {
+        open --raw $version_file | str trim
+    } else {
+        "0.1.0"
+    }
+}
+
 export def get-config [] {
     {
         backstage_version: "1.26.0",

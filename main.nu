@@ -13,6 +13,7 @@ use config.nu
 
 def print-banner [] {
     let colors = (config get-colors)
+    let version = (config get-version)
     print (($colors.cyan + $colors.bold) + "
  ╔═══════════════════════════════════════════════════════════════╗
  ║                                                               ║
@@ -22,6 +23,7 @@ def print-banner [] {
  ║                                                               ║
  ╚═══════════════════════════════════════════════════════════════╝
 " + $colors.reset)
+    print $"  ($colors.bold)version($colors.reset) ($version)\n"
 }
 
 def print-help [] {
