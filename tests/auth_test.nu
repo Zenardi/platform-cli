@@ -5,6 +5,15 @@ use ./helpers.nu *
 use std assert
 use ../modules/auth.nu
 
+# ── Helpers ─────────────────────────────────────────────────────────────────
+
+def run-auth-cmd [dir: string, mock_bin: string, extra_args: string = ""] {
+    let cmd = $"use ../modules/auth.nu; \$env.GITHUB_CLIENT_ID = 'x'; \$env.GITHUB_CLIENT_SECRET = 'x'; auth add-auth-provider github ($dir) ($extra_args)"
+    with-env {PATH: [$mock_bin ...$env.PATH]} {
+        nu --no-config-file -c $cmd | complete
+    }
+}
+
 # ── Tests ──────────────────────────────────────────────────────────────────
 
 def test_list_auth_providers_runs [] {
@@ -36,11 +45,9 @@ def test_patch_backend_index_injects_provider [] {
     make-fake-backstage $dir
     let index_path = ($dir + "/packages/backend/src/index.ts")
     let mock_bin = (make-mock-bin)
-
-    with-env {PATH: [$mock_bin ...$env.PATH]} {
-        nu --no-config-file -c $"use ../modules/auth.nu; \$env.GITHUB_CLIENT_ID = 'x'; \$env.GITHUB_CLIENT_SECRET = 'x'; auth add-auth-provider github ($dir)" | ignore
-    }
-
+    let result = (run-auth-cmd $dir $mock_bin)
+    let err1 = $"Command failed:\n($result.stdout)"
+    assert ($result.exit_code == 0) $err1
     let content = (open --raw $index_path)
     assert ($content | str contains "plugin-auth-backend-module-github-provider")
     rm -rf $dir
@@ -52,20 +59,17 @@ def test_patch_backend_index_idempotent [] {
     make-fake-backstage $dir
     let index_path = ($dir + "/packages/backend/src/index.ts")
     let mock_bin = (make-mock-bin)
-
-    with-env {PATH: [$mock_bin ...$env.PATH]} {
-        # First patch
-        nu --no-config-file -c $"use ../modules/auth.nu; \$env.GITHUB_CLIENT_ID = 'x'; \$env.GITHUB_CLIENT_SECRET = 'x'; auth add-auth-provider github ($dir)" | ignore
-        let after_first = (open --raw $index_path)
-
-        # Second patch — should be idempotent
-        nu --no-config-file -c $"use ../modules/auth.nu; \$env.GITHUB_CLIENT_ID = 'x'; \$env.GITHUB_CLIENT_SECRET = 'x'; auth add-auth-provider github ($dir)" | ignore
-        let after_second = (open --raw $index_path)
-
-        let count_first  = ($after_first  | split row "plugin-auth-backend-module-github-provider" | length)
-        let count_second = ($after_second | split row "plugin-auth-backend-module-github-provider" | length)
-        assert ($count_first == $count_second)
-    }
+    let r1 = (run-auth-cmd $dir $mock_bin)
+    let err1 = $"First patch failed:\n($r1.stdout)"
+    assert ($r1.exit_code == 0) $err1
+    let after_first = (open --raw $index_path)
+    let r2 = (run-auth-cmd $dir $mock_bin)
+    let err2 = $"Second patch failed:\n($r2.stdout)"
+    assert ($r2.exit_code == 0) $err2
+    let after_second = (open --raw $index_path)
+    let count_first  = ($after_first  | split row "plugin-auth-backend-module-github-provider" | length)
+    let count_second = ($after_second | split row "plugin-auth-backend-module-github-provider" | length)
+    assert ($count_first == $count_second) "Idempotency failed: provider was registered more than once"
     rm -rf $dir
     rm -rf $mock_bin
 }
@@ -75,13 +79,12 @@ def test_patch_frontend_app_new_system_injects_module [] {
     make-fake-backstage $dir
     let app_path = ($dir + "/packages/app/src/App.tsx")
     let mock_bin = (make-mock-bin)
-
-    with-env {PATH: [$mock_bin ...$env.PATH]} {
-        nu --no-config-file -c $"use ../modules/auth.nu; \$env.GITHUB_CLIENT_ID = 'x'; \$env.GITHUB_CLIENT_SECRET = 'x'; auth add-auth-provider github ($dir)" | ignore
-    }
-
+    let result = (run-auth-cmd $dir $mock_bin)
+    let err1 = $"Command failed:\n($result.stdout)"
+    assert ($result.exit_code == 0) $err1
     let content = (open --raw $app_path)
-    assert ($content | str contains "SignInPageBlueprint")
+    let err2 = $"Expected App.tsx to contain SignInPageBlueprint. Got:\n($content)"
+    assert ($content | str contains "SignInPageBlueprint") $err2
     rm -rf $dir
     rm -rf $mock_bin
 }
@@ -92,11 +95,9 @@ def test_add_auth_provider_writes_local_config [] {
     let local_cfg = ($dir + "/app-config.local.yaml")
     if ($local_cfg | path exists) { rm $local_cfg }
     let mock_bin = (make-mock-bin)
-
-    with-env {PATH: [$mock_bin ...$env.PATH]} {
-        nu --no-config-file -c $"use ../modules/auth.nu; \$env.GITHUB_CLIENT_ID = 'x'; \$env.GITHUB_CLIENT_SECRET = 'x'; auth add-auth-provider github ($dir)" | ignore
-    }
-
+    let result = (run-auth-cmd $dir $mock_bin)
+    let err1 = $"Command failed:\n($result.stdout)"
+    assert ($result.exit_code == 0) $err1
     assert-file-exists $local_cfg
     assert-file-contains $local_cfg "github"
     rm -rf $dir
@@ -109,11 +110,12 @@ def test_add_auth_provider_microsoft_writes_azure_config [] {
     let local_cfg = ($dir + "/app-config.local.yaml")
     if ($local_cfg | path exists) { rm $local_cfg }
     let mock_bin = (make-mock-bin)
-
-    with-env {PATH: [$mock_bin ...$env.PATH]} {
-        nu --no-config-file -c $"use ../modules/auth.nu; \$env.AZURE_CLIENT_ID = 'x'; \$env.AZURE_CLIENT_SECRET = 'x'; \$env.AZURE_TENANT_ID = 'x'; auth add-auth-provider microsoft ($dir)" | ignore
-    }
-
+    let cmd = $"use ../modules/auth.nu; \$env.AZURE_CLIENT_ID = 'x'; \$env.AZURE_CLIENT_SECRET = 'x'; \$env.AZURE_TENANT_ID = 'x'; auth add-auth-provider microsoft ($dir)"
+    let result = (with-env {PATH: [$mock_bin ...$env.PATH]} {
+        nu --no-config-file -c $cmd | complete
+    })
+    let err1 = $"Command failed:\n($result.stdout)"
+    assert ($result.exit_code == 0) $err1
     assert-file-exists $local_cfg
     assert-file-contains $local_cfg "microsoft"
     rm -rf $dir
@@ -132,13 +134,13 @@ def test_add_auth_provider_no_guest_flag [] {
     let dir = (make-temp-dir)
     make-fake-backstage $dir
     let mock_bin = (make-mock-bin)
-
-    with-env {PATH: [$mock_bin ...$env.PATH]} {
-        nu --no-config-file -c $"use ../modules/auth.nu; \$env.GITHUB_CLIENT_ID = 'x'; \$env.GITHUB_CLIENT_SECRET = 'x'; auth add-auth-provider github ($dir) --no-guest" | ignore
-    }
-
+    let result = (run-auth-cmd $dir $mock_bin "--no-guest")
+    let err1 = $"Command failed:\n($result.stdout)"
+    assert ($result.exit_code == 0) $err1
     let local_cfg = ($dir + "/app-config.local.yaml")
-    assert-file-contains $local_cfg "dangerouslyDisableDefaultAuthPolicy: true"
+    let content = (open --raw $local_cfg)
+    let err2 = $"Expected config to contain policy. Got:\n($content)"
+    assert ($content | str contains "dangerouslyDisableDefaultAuthPolicy: true") $err2
     rm -rf $dir
     rm -rf $mock_bin
 }
@@ -160,5 +162,3 @@ def main [] {
         ["add-auth-provider: --no-guest sets disable policy",{ test_add_auth_provider_no_guest_flag }]
     ]
 }
-
-main
