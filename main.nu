@@ -9,6 +9,8 @@ use modules/plugins.nu *
 use modules/app-config.nu *
 use modules/entities.nu *
 use modules/auth.nu *
+use modules/dockerfile.nu *
+use modules/kubernetes.nu *
 use config.nu
 
 def print-banner [] {
@@ -42,6 +44,8 @@ def print-help [] {
   config               Configuration management
   entity               Entity catalog management
   validate             Validate Backstage setup
+  dockerfile           Generate a production Dockerfile and .dockerignore
+  k8s                  Generate Kubernetes manifests (Deployment, Service, Ingress, Secrets)
   deploy               Prepare for production deployment
   help                 Show this help message
 
@@ -56,6 +60,10 @@ Examples:
   platform config set-database ./my-backstage --db-type postgresql
   platform entity create my-service --type component
   platform validate ./my-backstage
+  platform dockerfile ./my-backstage
+  platform dockerfile ./my-backstage --output ./deploy/Dockerfile
+  platform k8s ./my-backstage
+  platform k8s ./my-backstage --image ghcr.io/myorg/backstage:v1.0 --host backstage.mycompany.io
   
 See 'platform auth info <provider>' or 'platform plugin info <name>' for detailed setup guides.
 "
@@ -249,9 +257,31 @@ export def validate [instance_path: string] {
     }
 }
 
+# Dockerfile command
+export def "dockerfile gen" [
+    instance_path: string
+    --output: string = ""
+] {
+    if ($output | is-not-empty) {
+        generate-dockerfile $instance_path --output $output
+    } else {
+        generate-dockerfile $instance_path
+    }
+}
+
+# Kubernetes manifests command
+export def "k8s gen" [
+    instance_path: string
+    --namespace: string = "backstage"
+    --image: string = "docker.io/YOUR_DOCKERHUB_USER/backstage:latest"
+    --host: string = "backstage.example.com"
+    --replicas: int = 2
+] {
+    generate-k8s-manifests $instance_path --namespace $namespace --image $image --host $host --replicas $replicas
+}
+
 # Deploy command
-export def deploy [instance_path: string, --environment: string = "production"] {
-    utils print-header $"Preparing for Deployment: ($environment)"
+export def deploy [instance_path: string, --environment: string = "production"] {    utils print-header $"Preparing for Deployment: ($environment)"
     
     # Validate first
     validate $instance_path
@@ -490,6 +520,30 @@ def --wrapped main [--help (-h), ...rest] {
                     exit 1
                 }
             }
+        },
+        "dockerfile" => {
+            if ($rest | length) < 2 {
+                utils print-error "Usage: platform dockerfile <instance-path> [--output <path>]"
+                exit 1
+            }
+            let output = (get-flag $rest "--output" | default "")
+            if ($output | is-not-empty) {
+                generate-dockerfile ($rest | get 1) --output $output
+            } else {
+                generate-dockerfile ($rest | get 1)
+            }
+        },
+        "k8s" => {
+            if ($rest | length) < 2 {
+                utils print-error "Usage: platform k8s <instance-path> [--namespace <ns>] [--image <img>] [--host <host>] [--replicas <n>]"
+                exit 1
+            }
+            let ns       = (get-flag $rest "--namespace" | default "backstage")
+            let img      = (get-flag $rest "--image"     | default "docker.io/YOUR_DOCKERHUB_USER/backstage:latest")
+            let host_val = (get-flag $rest "--host"      | default "backstage.example.com")
+            let reps_str = (get-flag $rest "--replicas"  | default "2")
+            let reps     = ($reps_str | into int)
+            generate-k8s-manifests ($rest | get 1) --namespace $ns --image $img --host $host_val --replicas $reps
         },
         "deploy" => {
             if ($rest | length) < 2 {
