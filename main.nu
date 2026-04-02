@@ -214,8 +214,13 @@ export def validate [instance_path: string] {
             critical: false
         },
         {
-            name: "Directory structure",
-            path: ($instance_path + "/app"),
+            name: "packages/app (frontend)",
+            path: ($instance_path + "/packages/app"),
+            critical: true
+        },
+        {
+            name: "packages/backend",
+            path: ($instance_path + "/packages/backend"),
             critical: true
         }
     ]
