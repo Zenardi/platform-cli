@@ -3,6 +3,8 @@
 A Nushell CLI for scaffolding and configuring production-ready [Backstage](https://backstage.io) instances.
 Automates directory scaffolding, plugin installation, auth provider setup, and catalog entity creation.
 
+> **Tested with Backstage v1.49.3**
+
 ---
 
 ## Prerequisites
