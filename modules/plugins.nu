@@ -10,6 +10,7 @@ use ./utils.nu
 #   backend_pkg   – npm package installed into packages/backend (empty = none)
 #   description   – one-line summary
 #   app_config    – YAML snippet to append to app-config.yaml
+#   local_config  – optional YAML snippet to append to app-config.local.yaml
 #   notes         – post-install manual steps shown to the user
 # ---------------------------------------------------------------------------
 def plugin-registry [] {
@@ -30,20 +31,33 @@ integrations:
           clientSecret: ${AZURE_CLIENT_SECRET}
           tenantId: ${AZURE_TENANT_ID}
 "
+            local_config: "
+integrations:
+  azure:
+    - host: dev.azure.com
+      credentials:
+        - organizations:
+            - YOUR_AZURE_ORG
+          clientId: ${AZURE_CLIENT_ID}
+          clientSecret: ${AZURE_CLIENT_SECRET}
+          tenantId: ${AZURE_TENANT_ID}
+"
             notes: "
 Automated by CLI:
   ✓ Backend package installed
   ✓ Frontend package installed
   ✓ app-config.yaml updated
+  ✓ app-config.local.yaml updated with integrations.azure block
   ✓ packages/backend/src/index.ts patched
-  ✓ EntityPage.tsx patched (import + EntitySwitch.Case in cicdContent)
+  ✓ EntityPage.tsx patched (legacy system) OR see manual step below for new system
 
 Manual steps remaining:
-  1. Add entity annotation to catalog-info.yaml:
-       dev.azure.com/project-repo: <project>/<repo>
-
+  1. Replace YOUR_AZURE_ORG in app-config.local.yaml with your Azure DevOps org name
   2. Set environment variables: AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID
      (or use a Personal Access Token: personalAccessToken: \${AZURE_TOKEN})
+  3. Add entity annotation to catalog-info.yaml:
+       dev.azure.com/project-repo: <project>/<repo>
+  4. New frontend system only: add @backstage-community/plugin-azure-devops/alpha to features[] in App.tsx
 
   Docs: https://github.com/backstage/community-plugins/tree/main/workspaces/azure-devops
 "
@@ -117,17 +131,27 @@ techdocs:
   publisher:
     type: local
 "
+            local_config: "
+techdocs:
+  builder: 'local'
+  generator:
+    runIn: 'local'
+  publisher:
+    type: 'local'
+"
             notes: "
 Automated by CLI:
   ✓ Backend package installed
   ✓ Frontend package installed
   ✓ app-config.yaml updated
+  ✓ app-config.local.yaml updated with local techdocs config
   ✓ packages/backend/src/index.ts patched
-  ✓ EntityPage.tsx patched (imports + techdocsContent + /docs route)
+  ✓ EntityPage.tsx patched (legacy system) OR see manual step below for new system
 
 Manual steps remaining:
   1. Add entity annotation to catalog-info.yaml:
        backstage.io/techdocs-ref: dir:.
+  2. New frontend system only: add @backstage/plugin-techdocs/alpha to features[] in App.tsx
 "
         }
         "argocd": {
@@ -496,11 +520,32 @@ def patch-backend-plugin-index [instance_path: string, plugin: record] {
     utils print-success "packages/backend/src/index.ts updated"
 }
 
+# Detect whether the instance uses the new declarative frontend system.
+# Returns true if App.tsx imports from @backstage/frontend-defaults (new system),
+# false if it uses the legacy createApp from @backstage/app-defaults.
+def is-new-frontend-system [instance_path: string] {
+    let app_path = ($instance_path + "/packages/app/src/App.tsx")
+    if not ($app_path | path exists) { return false }
+    (open --raw $app_path) | str contains "frontend-defaults"
+}
+
+# Print a clear, actionable message when EntityPage.tsx is not present (new frontend system).
+def warn-entity-page-new-system [plugin_name: string] {
+    utils print-warning $"EntityPage.tsx not found — this Backstage instance uses the new declarative frontend system."
+    utils print-info   $"  Entity page cards for ($plugin_name) must be registered via plugin extensions."
+    utils print-info    "  Add the plugin's alpha/extension package to features[] in packages/app/src/App.tsx."
+    utils print-info    "  See: https://backstage.io/docs/frontend-system/building-plugins/migrating"
+}
+
 # Patch EntityPage.tsx with TechDocs import, content variable, and docs route
 def patch-entity-page-techdocs [instance_path: string] {
     let ep_path = ($instance_path + "/packages/app/src/components/catalog/EntityPage.tsx")
     if not ($ep_path | path exists) {
-        utils print-warning "EntityPage.tsx not found — skipping"
+        if (is-new-frontend-system $instance_path) {
+            warn-entity-page-new-system "techdocs"
+        } else {
+            utils print-warning $"EntityPage.tsx not found at ($ep_path) — skipping"
+        }
         return
     }
 
@@ -547,7 +592,11 @@ def patch-entity-page-techdocs [instance_path: string] {
 def patch-entity-page-kubernetes [instance_path: string] {
     let ep_path = ($instance_path + "/packages/app/src/components/catalog/EntityPage.tsx")
     if not ($ep_path | path exists) {
-        utils print-warning "EntityPage.tsx not found — skipping"
+        if (is-new-frontend-system $instance_path) {
+            warn-entity-page-new-system "kubernetes"
+        } else {
+            utils print-warning $"EntityPage.tsx not found at ($ep_path) — skipping"
+        }
         return
     }
 
@@ -635,7 +684,11 @@ def patch-apis-crossplane-resources [instance_path: string] {
 def patch-entity-page-crossplane-resources [instance_path: string] {
     let ep_path = ($instance_path + "/packages/app/src/components/catalog/EntityPage.tsx")
     if not ($ep_path | path exists) {
-        utils print-warning "EntityPage.tsx not found — skipping"
+        if (is-new-frontend-system $instance_path) {
+            warn-entity-page-new-system "crossplane-resources"
+        } else {
+            utils print-warning $"EntityPage.tsx not found at ($ep_path) — skipping"
+        }
         return
     }
 
@@ -766,7 +819,11 @@ def patch-apis-ts [instance_path: string, plugin_name: string] {
 def patch-entity-page-azure-devops [instance_path: string] {
     let ep_path = ($instance_path + "/packages/app/src/components/catalog/EntityPage.tsx")
     if not ($ep_path | path exists) {
-        utils print-warning "EntityPage.tsx not found — skipping"
+        if (is-new-frontend-system $instance_path) {
+            warn-entity-page-new-system "azure-devops"
+        } else {
+            utils print-warning $"EntityPage.tsx not found at ($ep_path) — skipping"
+        }
         return
     }
 
@@ -805,7 +862,11 @@ def patch-entity-page-azure-devops [instance_path: string] {
 def patch-entity-page-github-actions [instance_path: string] {
     let ep_path = ($instance_path + "/packages/app/src/components/catalog/EntityPage.tsx")
     if not ($ep_path | path exists) {
-        utils print-warning "EntityPage.tsx not found — skipping"
+        if (is-new-frontend-system $instance_path) {
+            warn-entity-page-new-system "github-actions"
+        } else {
+            utils print-warning $"EntityPage.tsx not found at ($ep_path) — skipping"
+        }
         return
     }
 
@@ -844,7 +905,11 @@ def patch-entity-page-github-actions [instance_path: string] {
 def patch-entity-page-grafana [instance_path: string] {
     let ep_path = ($instance_path + "/packages/app/src/components/catalog/EntityPage.tsx")
     if not ($ep_path | path exists) {
-        utils print-warning "EntityPage.tsx not found — skipping"
+        if (is-new-frontend-system $instance_path) {
+            warn-entity-page-new-system "grafana"
+        } else {
+            utils print-warning $"EntityPage.tsx not found at ($ep_path) — skipping"
+        }
         return
     }
 
@@ -1094,6 +1159,25 @@ export def add-plugin [
             }
         } else {
             utils print-warning "app-config.yaml not found — skipping config update"
+        }
+
+        # ── app-config.local.yaml (only if plugin defines local_config) ───────
+        let local_config = ($plugin | get --optional local_config)
+        if ($local_config != null) and (($local_config | str trim) != "") {
+            let local_path = ($instance_path + "/app-config.local.yaml")
+            let local_existing = if ($local_path | path exists) {
+                open --raw $local_path
+            } else {
+                ""
+            }
+            let local_marker = ($local_config | str trim | lines | get 0)
+            if not ($local_existing | str contains $local_marker) {
+                let header = ("# --- " + $plugin.name + " plugin (local) ---")
+                ($local_existing + "\n" + $header + "\n" + $local_config) | save --force $local_path
+                utils print-success "app-config.local.yaml updated with local plugin configuration"
+            } else {
+                utils print-info "app-config.local.yaml already contains this plugin's local config"
+            }
         }
     }
 
