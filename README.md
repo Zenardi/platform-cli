@@ -6,6 +6,43 @@ Automates scaffolding, plugin installation, auth provider setup, catalog entity 
 > [!NOTE]
 > **Tested with Backstage v1.49.3**
 
+- [Platform CLI — Backstage Bootstrap Tool](#platform-cli--backstage-bootstrap-tool)
+  - [Prerequisites](#prerequisites)
+  - [Installation](#installation)
+    - [1. Clone the repository](#1-clone-the-repository)
+    - [2. Run the setup script](#2-run-the-setup-script)
+    - [3. Reload your shell](#3-reload-your-shell)
+    - [4. Verify](#4-verify)
+    - [Run without installing](#run-without-installing)
+  - [Setting Environment Variables (Nushell)](#setting-environment-variables-nushell)
+  - [Quick Start](#quick-start)
+  - [Commands Reference](#commands-reference)
+    - [`platform init`](#platform-init)
+    - [`platform plugin list`](#platform-plugin-list)
+    - [`platform plugin info`](#platform-plugin-info)
+    - [`platform plugin add`](#platform-plugin-add)
+    - [`platform plugin remove`](#platform-plugin-remove)
+    - [`platform auth list`](#platform-auth-list)
+    - [`platform auth info`](#platform-auth-info)
+    - [`platform auth add`](#platform-auth-add)
+    - [`platform config init`](#platform-config-init)
+    - [`platform config validate`](#platform-config-validate)
+    - [`platform config set-database`](#platform-config-set-database)
+    - [`platform config set-auth`](#platform-config-set-auth)
+    - [`platform config set-storage`](#platform-config-set-storage)
+    - [`platform entity create`](#platform-entity-create)
+    - [`platform entity create-bulk`](#platform-entity-create-bulk)
+    - [`platform entity list`](#platform-entity-list)
+    - [`platform entity validate`](#platform-entity-validate)
+    - [`platform validate`](#platform-validate)
+    - [`platform dockerfile`](#platform-dockerfile)
+    - [`platform k8s`](#platform-k8s)
+    - [`platform deploy`](#platform-deploy)
+  - [Catalog Entity Format](#catalog-entity-format)
+  - [Project Structure](#project-structure)
+  - [See Also](#see-also)
+
+
 ---
 
 ## Prerequisites
