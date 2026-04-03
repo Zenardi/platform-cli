@@ -11,6 +11,7 @@ use modules/entities.nu *
 use modules/auth.nu *
 use modules/dockerfile.nu *
 use modules/kubernetes.nu *
+use modules/actions.nu *
 use config.nu
 
 def print-banner [] {
@@ -42,6 +43,9 @@ def print-help [] {
   auth list            List available auth providers
   auth add             Install and configure an auth provider
   auth info            Show full setup guide for an auth provider
+  action list          List available custom scaffolder actions
+  action add           Install a custom scaffolder action into a Backstage instance
+  action info          Show details and usage for a custom scaffolder action
   config               Configuration management
   entity               Entity catalog management
   validate             Validate Backstage setup
@@ -60,6 +64,9 @@ Examples:
   platform auth info microsoft
   platform auth add microsoft ./my-backstage
   platform auth add microsoft ./my-backstage --client-id abc --client-secret xyz --tenant-id tid
+  platform action list
+  platform action info azure-pipeline
+  platform action add azure-pipeline ./my-backstage
   platform config set-database ./my-backstage --db-type postgresql
   platform entity create my-service --type component
   platform validate ./my-backstage
@@ -798,6 +805,58 @@ def --wrapped main [...rest] {
         },
         "help" | "--help" | "-h" => {
             print-help
+        },
+        "action" => {
+            if ($rest | length) < 2 or $rest.1 == "--help" or $rest.1 == "-h" {
+                print-subcommand-help {
+                    usage: "platform action <subcommand> [args]"
+                    description: "Manage custom scaffolder actions for a Backstage instance.\nSubcommands: add, list, info"
+                    examples: "  platform action list\n  platform action info azure-pipeline\n  platform action add azure-pipeline ./my-backstage"
+                }
+                return
+            }
+            match $rest.1 {
+                "add" => {
+                    if ("--help" in $rest) or ("-h" in $rest) {
+                        print-subcommand-help {
+                            usage: "platform action add <name> <instance-path>"
+                            description: "Install a custom scaffolder action into a Backstage instance.\nCreates the TypeScript source file under packages/backend/src/extensions/\nand registers it in packages/backend/src/index.ts.\n\nRestart the Backstage backend after running this command."
+                            args: "  name            Action name (see 'platform action list')\n  instance-path   Path to the Backstage instance root"
+                            examples: "  platform action add azure-pipeline ./my-backstage"
+                        }
+                        return
+                    }
+                    if ($rest | length) < 4 {
+                        utils print-error "Usage: platform action add <name> <instance-path>"
+                        exit 1
+                    }
+                    install-action ($rest | get 2) ($rest | get 3)
+                },
+                "list" => {
+                    list-available-actions
+                },
+                "info" => {
+                    if ("--help" in $rest) or ("-h" in $rest) {
+                        print-subcommand-help {
+                            usage: "platform action info <name>"
+                            description: "Show details, inputs, outputs and template usage for a custom scaffolder action."
+                            args: "  name    Action name (see 'platform action list')"
+                            examples: "  platform action info azure-pipeline"
+                        }
+                        return
+                    }
+                    if ($rest | length) < 3 {
+                        utils print-error "Usage: platform action info <name>"
+                        exit 1
+                    }
+                    show-action-info ($rest | get 2)
+                },
+                _ => {
+                    utils print-error $"Unknown action subcommand: ($rest.1)"
+                    utils print-info "Available: add, list, info"
+                    exit 1
+                }
+            }
         },
         _ => {
             utils print-error $"Unknown command: ($rest.0)"
