@@ -189,20 +189,30 @@ platform plugin list
 
 **Available plugins:**
 
-| ID | Name | Packages | Auto-patches |
-|----|------|----------|--------------|
-| `azure-devops` | Azure DevOps | frontend + backend | `index.ts`, `EntityPage.tsx` |
-| `github-actions` | GitHub Actions | frontend only | `EntityPage.tsx` |
-| `kubernetes` | Kubernetes | frontend + backend | `index.ts`, `EntityPage.tsx` |
-| `techdocs` | TechDocs | frontend + backend | `index.ts`, `EntityPage.tsx` |
-| `argocd` | Argo CD | frontend + backend | `index.ts` |
-| `sonarqube` | SonarQube | frontend + backend | `index.ts` |
-| `kubernetes-ingestor` | Kubernetes Ingestor | backend only | `index.ts` |
-| `crossplane-resources` | Crossplane Resources | frontend + backend | `index.ts`, `apis.ts`, `EntityPage.tsx` |
-| `grafana` | Grafana | frontend only | `EntityPage.tsx` |
-| `holiday-tracker` | Holiday Tracker | frontend only | `App.tsx` |
-| `cost-insights` | Cost Insights | frontend only | `apis.ts`, `App.tsx` |
-| `infrawallet` | InfraWallet | frontend + backend | `index.ts`, `App.tsx` |
+| ID | Name | Packages | Auto-patches | Scaffolder Actions |
+|----|------|----------|--------------|--------------------|
+| `azure-devops` | Azure DevOps | frontend + backend + scaffolder module | `index.ts`, `EntityPage.tsx` | `publish:azure` |
+| `github-actions` | GitHub Actions | frontend only | `EntityPage.tsx` | — |
+| `kubernetes` | Kubernetes | frontend + backend | `index.ts`, `EntityPage.tsx` | — |
+| `techdocs` | TechDocs | frontend + backend | `index.ts`, `EntityPage.tsx` | — |
+| `argocd` | Argo CD | frontend + backend | `index.ts` | — |
+| `sonarqube` | SonarQube | frontend + backend | `index.ts` | — |
+| `kubernetes-ingestor` | Kubernetes Ingestor | backend only | `index.ts` | — |
+| `crossplane-resources` | Crossplane Resources | frontend + backend | `index.ts`, `apis.ts`, `EntityPage.tsx` | — |
+| `grafana` | Grafana | frontend only | `EntityPage.tsx` | — |
+| `holiday-tracker` | Holiday Tracker | frontend only | `App.tsx` | — |
+| `cost-insights` | Cost Insights | frontend only | `apis.ts`, `App.tsx` | — |
+| `infrawallet` | InfraWallet | frontend + backend | `index.ts`, `App.tsx` | — |
+
+> **Azure DevOps — `publish:azure` scaffolder action:** Installing the `azure-devops` plugin also installs `@backstage/plugin-scaffolder-backend-module-azure` and registers it in `packages/backend/src/index.ts`. This makes the `publish:azure` built-in action available in your software templates. No manual steps required.
+
+> **⚠ Azure DevOps — Local vs Production credentials:**
+> - **Local development:** Managed Identity does **not** work on a local machine — it requires Azure-hosted infrastructure (AKS, App Service, VM). Use `clientId + clientSecret` in `app-config.local.yaml`. Generate a client secret in: Azure Portal → App Registrations → your app → Certificates & Secrets.
+> - **Production (AKS/Azure-hosted):** Use `managedIdentityClientId` in `app-config.yaml`.
+>
+> If you see `ManagedIdentityCredential: Network unreachable` locally, your `app-config.local.yaml` is using `managedIdentityClientId` instead of `clientSecret`.
+>
+> **Also required:** The app registration must be added as a member of your Azure DevOps organization at `https://dev.azure.com/{YOUR_ORG}/_settings/users` (License: Basic, Group: Project Contributors). Without this you will get `TF401444: Please sign-in at least once...`.
 
 ---
 

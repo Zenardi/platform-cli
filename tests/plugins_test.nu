@@ -107,21 +107,91 @@ def test_installed_plugins_unknown_path_exits_1 [] {
     assert ($result.exit_code == 1)
 }
 
+# ── Azure DevOps scaffolder module tests ────────────────────────────────────
+
+def test_azure_devops_registry_has_scaffolder_pkg [] {
+    # Access via show-plugin-info output (registry is not exported)
+    let out = (nu --no-config-file -c "use ../modules/plugins.nu; plugins show-plugin-info azure-devops" | complete)
+    assert ($out.exit_code == 0)
+    assert ($out.stdout | str contains "plugin-scaffolder-backend-module-azure") "azure-devops info must mention the scaffolder module"
+}
+
+def test_patch_scaffolder_index_adds_import [] {
+    let dir = (make-temp-dir)
+    make-fake-backstage $dir
+    let index_path = ($dir + "/packages/backend/src/index.ts")
+
+    # Directly test the patch function behaviour by calling add-plugin with mocked yarn
+    # We test the patch logic by calling the internal patch via a nu -c invocation
+    let result = (nu --no-config-file -c $"
+        use ../modules/plugins.nu
+        # Simulate: call the patch function directly
+        plugins patch-scaffolder-module-index '($dir)' '@backstage/plugin-scaffolder-backend-module-azure'
+    " | complete)
+
+    let content = (open --raw $index_path)
+    assert ($content | str contains "plugin-scaffolder-backend-module-azure") "index.ts must contain scaffolder azure module import"
+}
+
+def test_patch_scaffolder_index_idempotent [] {
+    let dir = (make-temp-dir)
+    make-fake-backstage $dir
+    let index_path = ($dir + "/packages/backend/src/index.ts")
+
+    # Patch twice
+    nu --no-config-file -c $"use ../modules/plugins.nu; plugins patch-scaffolder-module-index '($dir)' '@backstage/plugin-scaffolder-backend-module-azure'" | ignore
+    nu --no-config-file -c $"use ../modules/plugins.nu; plugins patch-scaffolder-module-index '($dir)' '@backstage/plugin-scaffolder-backend-module-azure'" | ignore
+
+    let content = (open --raw $index_path)
+    let count = ($content | split row "plugin-scaffolder-backend-module-azure" | length)
+    # Should appear exactly once (split produces 2 parts for 1 occurrence)
+    assert ($count == 2) "scaffolder module import must appear exactly once (idempotent)"
+}
+
+def test_patch_scaffolder_index_before_backend_start [] {
+    let dir = (make-temp-dir)
+    make-fake-backstage $dir
+    let index_path = ($dir + "/packages/backend/src/index.ts")
+
+    nu --no-config-file -c $"use ../modules/plugins.nu; plugins patch-scaffolder-module-index '($dir)' '@backstage/plugin-scaffolder-backend-module-azure'" | ignore
+
+    let content = (open --raw $index_path)
+    # The import line must appear before backend.start()
+    let import_pos = ($content | str index-of "plugin-scaffolder-backend-module-azure")
+    let start_pos  = ($content | str index-of "backend.start()")
+    assert ($import_pos < $start_pos) "scaffolder import must appear before backend.start()"
+}
+
+def test_patch_scaffolder_index_missing_index_ts [] {
+    let dir = (make-temp-dir)
+    make-fake-backstage $dir
+    rm ($dir + "/packages/backend/src/index.ts")
+
+    # Should warn but not crash (exit 0)
+    let result = (nu --no-config-file -c $"use ../modules/plugins.nu; plugins patch-scaffolder-module-index '($dir)' '@backstage/plugin-scaffolder-backend-module-azure'" | complete)
+    assert ($result.exit_code == 0) "should warn but not crash when index.ts is missing"
+}
+
 # ── Runner ─────────────────────────────────────────────────────────────────
 
 def main [] {
     run-tests "plugins.nu" [
-        ["list-available-plugins: exactly 12 in registry",           { test_list_available_plugins_count }]
-        ["show-plugin-info: known plugin exits 0",                   { test_show_plugin_info_known }]
-        ["show-plugin-info: unknown plugin exits 1",                 { test_show_plugin_info_unknown_exits_1 }]
-        ["add-plugin: unknown plugin exits 1",                       { test_add_plugin_unknown_exits_1 }]
-        ["remove-plugin: unknown plugin exits 1",                    { test_remove_plugin_unknown_exits_1 }]
-        ["patch-entity-page: kubernetes idempotent",                 { test_patch_entity_page_kubernetes_idempotent }]
-        ["list-installed-plugins: no plugins shows empty message",   { test_installed_plugins_none }]
-        ["list-installed-plugins: detects frontend package",         { test_installed_plugins_detects_frontend_pkg }]
-        ["list-installed-plugins: detects backend package",          { test_installed_plugins_detects_backend_pkg }]
-        ["list-installed-plugins: shows multiple installed plugins", { test_installed_plugins_shows_multiple }]
-        ["list-installed-plugins: invalid path exits 1",             { test_installed_plugins_unknown_path_exits_1 }]
+        ["list-available-plugins: exactly 12 in registry",                    { test_list_available_plugins_count }]
+        ["show-plugin-info: known plugin exits 0",                            { test_show_plugin_info_known }]
+        ["show-plugin-info: unknown plugin exits 1",                          { test_show_plugin_info_unknown_exits_1 }]
+        ["add-plugin: unknown plugin exits 1",                                { test_add_plugin_unknown_exits_1 }]
+        ["remove-plugin: unknown plugin exits 1",                             { test_remove_plugin_unknown_exits_1 }]
+        ["patch-entity-page: kubernetes idempotent",                          { test_patch_entity_page_kubernetes_idempotent }]
+        ["list-installed-plugins: no plugins shows empty message",            { test_installed_plugins_none }]
+        ["list-installed-plugins: detects frontend package",                  { test_installed_plugins_detects_frontend_pkg }]
+        ["list-installed-plugins: detects backend package",                   { test_installed_plugins_detects_backend_pkg }]
+        ["list-installed-plugins: shows multiple installed plugins",          { test_installed_plugins_shows_multiple }]
+        ["list-installed-plugins: invalid path exits 1",                      { test_installed_plugins_unknown_path_exits_1 }]
+        ["azure-devops: registry has scaffolder_pkg field",                   { test_azure_devops_registry_has_scaffolder_pkg }]
+        ["patch-scaffolder-index: adds import to index.ts",                   { test_patch_scaffolder_index_adds_import }]
+        ["patch-scaffolder-index: idempotent (no duplicates)",                { test_patch_scaffolder_index_idempotent }]
+        ["patch-scaffolder-index: import placed before backend.start()",      { test_patch_scaffolder_index_before_backend_start }]
+        ["patch-scaffolder-index: missing index.ts warns, does not crash",    { test_patch_scaffolder_index_missing_index_ts }]
     ]
 }
 
