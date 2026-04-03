@@ -70,16 +70,58 @@ def test_patch_entity_page_kubernetes_idempotent [] {
     rm -rf $dir
 }
 
+def test_installed_plugins_none [] {
+    let dir = (make-temp-dir)
+    make-fake-backstage $dir
+    let installed = (plugins list-installed-plugins $dir)
+    assert ($installed | is-empty) "Expected no plugins installed"
+}
+
+def test_installed_plugins_detects_frontend_pkg [] {
+    let dir = (make-temp-dir)
+    make-fake-backstage $dir
+    '{"name":"@internal/app","version":"0.0.1","dependencies":{"@backstage/plugin-kubernetes":"^0.11.0"}}' | save --force ($dir + "/packages/app/package.json")
+    let installed = (plugins list-installed-plugins $dir)
+    assert ($installed | any {|p| $p.id == "kubernetes"}) "Expected kubernetes to be detected"
+}
+
+def test_installed_plugins_detects_backend_pkg [] {
+    let dir = (make-temp-dir)
+    make-fake-backstage $dir
+    '{"name":"@internal/backend","version":"0.0.1","dependencies":{"@backstage/plugin-kubernetes-backend":"^0.18.0"}}' | save --force ($dir + "/packages/backend/package.json")
+    let installed = (plugins list-installed-plugins $dir)
+    assert ($installed | any {|p| $p.id == "kubernetes"}) "Expected kubernetes to be detected via backend"
+}
+
+def test_installed_plugins_shows_multiple [] {
+    let dir = (make-temp-dir)
+    make-fake-backstage $dir
+    '{"name":"@internal/app","version":"0.0.1","dependencies":{"@backstage/plugin-kubernetes":"^0.11.0","@backstage-community/plugin-grafana":"^0.5.0"}}' | save --force ($dir + "/packages/app/package.json")
+    let installed = (plugins list-installed-plugins $dir)
+    assert ($installed | any {|p| $p.id == "kubernetes"}) "Expected kubernetes"
+    assert ($installed | any {|p| $p.id == "grafana"}) "Expected grafana"
+}
+
+def test_installed_plugins_unknown_path_exits_1 [] {
+    let result = (nu --no-config-file -c "use ../modules/plugins.nu; plugins print-installed-plugins /nonexistent/path" | complete)
+    assert ($result.exit_code == 1)
+}
+
 # ── Runner ─────────────────────────────────────────────────────────────────
 
 def main [] {
     run-tests "plugins.nu" [
-        ["list-available-plugins: exactly 12 in registry",   { test_list_available_plugins_count }]
-        ["show-plugin-info: known plugin exits 0",           { test_show_plugin_info_known }]
-        ["show-plugin-info: unknown plugin exits 1",         { test_show_plugin_info_unknown_exits_1 }]
-        ["add-plugin: unknown plugin exits 1",               { test_add_plugin_unknown_exits_1 }]
-        ["remove-plugin: unknown plugin exits 1",            { test_remove_plugin_unknown_exits_1 }]
-        ["patch-entity-page: kubernetes idempotent",         { test_patch_entity_page_kubernetes_idempotent }]
+        ["list-available-plugins: exactly 12 in registry",           { test_list_available_plugins_count }]
+        ["show-plugin-info: known plugin exits 0",                   { test_show_plugin_info_known }]
+        ["show-plugin-info: unknown plugin exits 1",                 { test_show_plugin_info_unknown_exits_1 }]
+        ["add-plugin: unknown plugin exits 1",                       { test_add_plugin_unknown_exits_1 }]
+        ["remove-plugin: unknown plugin exits 1",                    { test_remove_plugin_unknown_exits_1 }]
+        ["patch-entity-page: kubernetes idempotent",                 { test_patch_entity_page_kubernetes_idempotent }]
+        ["list-installed-plugins: no plugins shows empty message",   { test_installed_plugins_none }]
+        ["list-installed-plugins: detects frontend package",         { test_installed_plugins_detects_frontend_pkg }]
+        ["list-installed-plugins: detects backend package",          { test_installed_plugins_detects_backend_pkg }]
+        ["list-installed-plugins: shows multiple installed plugins", { test_installed_plugins_shows_multiple }]
+        ["list-installed-plugins: invalid path exits 1",             { test_installed_plugins_unknown_path_exits_1 }]
     ]
 }
 

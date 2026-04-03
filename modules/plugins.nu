@@ -1260,7 +1260,84 @@ export def list-available-plugins [] {
     } | ignore
 }
 
-# Show detailed info and install instructions for a plugin
+# List all CLI-registered plugins currently installed in a Backstage instance.
+# Returns a list of records: { id, name, frontend (bool), backend (bool) }
+# Scans packages/app/package.json and packages/backend/package.json for known plugin packages.
+export def list-installed-plugins [instance_path: string] {
+    let expanded   = ($instance_path | path expand)
+    let app_pkg    = ($expanded + "/packages/app/package.json")
+    let backend_pkg_file = ($expanded + "/packages/backend/package.json")
+    let registry   = (plugin-registry)
+
+    let app_deps = if ($app_pkg | path exists) {
+        let pkg = (open --raw $app_pkg | from json)
+        let deps         = ($pkg | get --optional dependencies | default {})
+        let dev_deps     = ($pkg | get --optional devDependencies | default {})
+        ($deps | columns) ++ ($dev_deps | columns)
+    } else { [] }
+
+    let backend_deps = if ($backend_pkg_file | path exists) {
+        let pkg = (open --raw $backend_pkg_file | from json)
+        let deps         = ($pkg | get --optional dependencies | default {})
+        let dev_deps     = ($pkg | get --optional devDependencies | default {})
+        ($deps | columns) ++ ($dev_deps | columns)
+    } else { [] }
+
+    let all_deps = ($app_deps ++ $backend_deps)
+
+    $registry | items {|id, plugin|
+        let has_frontend = ($plugin.frontend_pkg | is-not-empty) and ($plugin.frontend_pkg in $all_deps)
+        let has_backend  = ($plugin.backend_pkg  | is-not-empty) and ($plugin.backend_pkg  in $all_deps)
+        if $has_frontend or $has_backend {
+            {
+                id:       $id
+                name:     $plugin.name
+                frontend: $has_frontend
+                backend:  $has_backend
+            }
+        }
+    } | where {|x| $x != null}
+}
+
+# Print a formatted list of plugins installed in a Backstage instance.
+export def print-installed-plugins [instance_path: string] {
+    let expanded = ($instance_path | path expand)
+
+    if not ($expanded | path exists) {
+        utils print-error $"Instance path not found: ($expanded)"
+        exit 1
+    }
+
+    let registry  = (plugin-registry)
+    let colors    = (config get-colors)
+    let installed = (list-installed-plugins $instance_path)
+
+    utils print-header $"Installed Plugins — ($expanded)"
+    print ""
+
+    if ($installed | is-empty) {
+        utils print-info "No registered plugins installed"
+        return
+    }
+
+    for p in $installed {
+        let plugin = ($registry | get $p.id)
+        print $"  ($colors.cyan)($colors.bold)($p.id)($colors.reset)  ($p.name)"
+        print $"    ($plugin.description)"
+        if $p.frontend {
+            utils print-success $"  frontend  ($plugin.frontend_pkg)"
+        }
+        if $p.backend {
+            utils print-success $"  backend   ($plugin.backend_pkg)"
+        }
+        print ""
+    }
+
+    let count = ($installed | length)
+    let msg = ($count | into string) + " plugin(s) installed"
+    utils print-info $msg
+}
+
 export def show-plugin-info [plugin_name: string] {
     let registry = (plugin-registry)
 
@@ -1287,3 +1364,5 @@ export def show-plugin-info [plugin_name: string] {
     utils print-header "Post-install Notes"
     print $plugin.notes
 }
+
+

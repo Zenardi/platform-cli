@@ -38,6 +38,7 @@ def print-help [] {
   plugin add           Install a plugin into a Backstage instance
   plugin remove        Remove a plugin from a Backstage instance
   plugin info          Show install instructions for a plugin
+  plugin installed     List plugins currently installed in a Backstage instance
   auth list            List available auth providers
   auth add             Install and configure an auth provider
   auth info            Show full setup guide for an auth provider
@@ -52,7 +53,9 @@ def print-help [] {
 Examples:
   platform init my-backstage
   platform plugin list
+  platform plugin info kubernetes
   platform plugin add azure-devops ./my-backstage
+  platform plugin installed ./my-backstage
   platform auth list
   platform auth info microsoft
   platform auth add microsoft ./my-backstage
@@ -349,8 +352,8 @@ def --wrapped main [...rest] {
             if ($rest | length) < 2 or $rest.1 == "--help" or $rest.1 == "-h" {
                 print-subcommand-help {
                     usage: "platform plugin <subcommand> [args]"
-                    description: "Manage plugins for a Backstage instance.\nSubcommands: add, remove, list, info"
-                    examples: "  platform plugin list\n  platform plugin info kubernetes\n  platform plugin add kubernetes ./my-backstage\n  platform plugin remove kubernetes ./my-backstage"
+                    description: "Manage plugins for a Backstage instance.\nSubcommands: add, remove, list, info, installed"
+                    examples: "  platform plugin list\n  platform plugin info kubernetes\n  platform plugin add kubernetes ./my-backstage\n  platform plugin remove kubernetes ./my-backstage\n  platform plugin installed ./my-backstage"
                 }
                 return
             }
@@ -410,8 +413,24 @@ def --wrapped main [...rest] {
                     }
                     show-plugin-info ($rest | get 2)
                 },
+                "installed" => {
+                    if ("--help" in $rest) or ("-h" in $rest) {
+                        print-subcommand-help {
+                            usage: "platform plugin installed <instance-path>"
+                            description: "List all CLI-registered plugins that are currently installed in a Backstage instance.\nScans packages/app/package.json and packages/backend/package.json for known plugin packages\nand cross-references them against the CLI plugin registry."
+                            args: "  instance-path   Path to the Backstage instance root"
+                            examples: "  platform plugin installed ./my-backstage\n  platform plugin installed ."
+                        }
+                        return
+                    }
+                    if ($rest | length) < 3 {
+                        utils print-error "Usage: platform plugin installed <instance-path>"
+                        exit 1
+                    }
+                    print-installed-plugins ($rest | get 2)
+                },
                 _ => {
-                    utils print-error $"Unknown plugin command: ($rest.1). Available: add, remove, list, info"
+                    utils print-error $"Unknown plugin command: ($rest.1). Available: add, remove, list, info, installed"
                     exit 1
                 }
             }
