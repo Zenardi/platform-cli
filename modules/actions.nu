@@ -11,7 +11,7 @@ def action-registry [] {
             file: "azurePipelineAction.ts"
             module_ref: "./extensions/azurePipelineAction"
             description: "Creates an Azure DevOps pipeline definition from a YAML file in the repo and triggers its first run. Supports setting secret pipeline variables (e.g. registry credentials)."
-            inputs: "organization, project, repoName, pipelineName, pipelineYamlPath, variables?"
+            inputs: "organization, project, repoName, pipelineName, agentPoolName?, pipelineYamlPath, variables?"
             outputs: "pipelineId, pipelineUrl, runId, runUrl"
             notes: "Requires integrations.azure configured in app-config. Uses Build Definitions API so secret pipeline variables can be set at creation time."
         }
@@ -47,11 +47,16 @@ function createAzurePipelineAction(integrations: ScmIntegrations) {
         project: (z: any) => z.string().describe('Azure DevOps Project name'),
         repoName: (z: any) => z.string().describe('Repository name'),
         pipelineName: (z: any) => z.string().describe('Name to give the pipeline'),
+        agentPoolName: (z: any) =>
+          z
+            .string()
+            .optional()
+            .describe('Default agent pool name for the pipeline definition'),
         pipelineYamlPath: (z: any) =>
           z
             .string()
-            .default('/azure-pipelines.yml')
-            .describe('Path to the pipeline YAML file inside the repo'),
+            .default('azure-pipelines.yml')
+            .describe('Path to the pipeline YAML file inside the repo (no leading slash)'),
         variables: (z: any) =>
           z
             .record(
@@ -77,6 +82,7 @@ function createAzurePipelineAction(integrations: ScmIntegrations) {
         project,
         repoName,
         pipelineName,
+        agentPoolName,
         pipelineYamlPath,
         variables,
       } = ctx.input as {
@@ -84,6 +90,7 @@ function createAzurePipelineAction(integrations: ScmIntegrations) {
         project: string;
         repoName: string;
         pipelineName: string;
+        agentPoolName?: string;
         pipelineYamlPath: string;
         variables?: Record<string, { value: string; isSecret?: boolean }>;
       };
@@ -148,8 +155,9 @@ function createAzurePipelineAction(integrations: ScmIntegrations) {
 
       const createBody: Record<string, unknown> = {
         name: pipelineName,
-        process: { type: 2, yamlFilename: pipelineYamlPath },
+        process: { type: 2, yamlFilename: pipelineYamlPath.replace(/^\\/+/, '') },
         repository: { id: repo.id, type: 'TfsGit', name: repoName },
+        ...(agentPoolName ? { queue: { name: agentPoolName } } : {}),
       };
       if (Object.keys(varPayload).length > 0) {
         createBody.variables = varPayload;
@@ -177,10 +185,10 @@ function createAzurePipelineAction(integrations: ScmIntegrations) {
       };
       ctx.logger.info(`Pipeline created — ID: ${pipeline.id}`);
 
-      // 3. Trigger the first run
+      // 3. Trigger the first run via Build Queuing API (more reliable with self-hosted pools)
       ctx.logger.info('Triggering pipeline run...');
       const runRes = await fetch(
-        `${apiBase}/pipelines/${pipeline.id}/runs?api-version=7.0`,
+        `${apiBase}/build/builds?api-version=7.0`,
         {
           method: 'POST',
           headers: {
@@ -188,11 +196,8 @@ function createAzurePipelineAction(integrations: ScmIntegrations) {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            resources: {
-              repositories: {
-                self: { refName: 'refs/heads/main' },
-              },
-            },
+            definition: { id: pipeline.id },
+            sourceBranch: 'refs/heads/main',
           }),
         },
       );
