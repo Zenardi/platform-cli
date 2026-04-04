@@ -12,6 +12,7 @@ use modules/auth.nu *
 use modules/dockerfile.nu *
 use modules/kubernetes.nu *
 use modules/actions.nu *
+use modules/cluster.nu *
 use config.nu
 
 def print-banner [] {
@@ -51,6 +52,7 @@ def print-help [] {
   validate             Validate Backstage setup
   dockerfile           Generate a production Dockerfile and .dockerignore
   k8s                  Generate Kubernetes manifests (Deployment, Service, Ingress, Secrets)
+  cluster              Manage Kubernetes cluster config in app-config.local.yaml
   deploy               Prepare for production deployment
   help                 Show this help message
 
@@ -74,6 +76,10 @@ Examples:
   platform dockerfile ./my-backstage --output ./deploy/Dockerfile
   platform k8s ./my-backstage
   platform k8s ./my-backstage --image ghcr.io/myorg/backstage:v1.0 --host backstage.mycompany.io
+  platform cluster configure ./my-backstage --cluster-name kind-backstage
+  platform cluster configure ./my-backstage --cluster-name prod-cluster --kubeconfig ~/.kube/prod.yaml --sa-name backstage-reader
+  platform cluster configure ./my-backstage --cluster-name kind-backstage --duration 2160h
+  platform cluster list ./my-backstage
   
 See 'platform auth info <provider>' or 'platform plugin info <name>' for detailed setup guides.
 "
@@ -785,6 +791,64 @@ def --wrapped main [...rest] {
             let reps_str = (get-flag $rest "--replicas"  | default "2")
             let reps     = ($reps_str | into int)
             generate-k8s-manifests ($rest | get 1) --namespace $ns --image $img --host $host_val --replicas $reps
+        },
+        "cluster" => {
+            if ($rest | length) < 2 or $rest.1 == "--help" or $rest.1 == "-h" {
+                print-subcommand-help {
+                    usage: "platform cluster <subcommand> [args]"
+                    description: "Manage Kubernetes cluster configuration in app-config.local.yaml.\n\nSubcommands:\n  configure   Create/update ServiceAccount+RBAC, generate token, and register\n              the cluster in app-config.local.yaml (idempotent — re-run to rotate token).\n  list        Show clusters already configured in app-config.local.yaml."
+                    examples: "  platform cluster configure ./my-backstage --cluster-name kind-backstage\n  platform cluster configure ./my-backstage --cluster-name prod --kubeconfig ~/.kube/prod.yaml\n  platform cluster configure ./my-backstage --cluster-name kind-backstage --duration 2160h\n  platform cluster configure ./my-backstage --cluster-name kind-backstage --sa-name my-sa --namespace monitoring\n  platform cluster list ./my-backstage"
+                }
+                return
+            }
+            match $rest.1 {
+                "configure" => {
+                    if ("--help" in $rest) or ("-h" in $rest) {
+                        print-subcommand-help {
+                            usage: "platform cluster configure <instance-path> --cluster-name <name> [flags]"
+                            description: "Create or update a Kubernetes cluster in app-config.local.yaml.\n\nThis command is idempotent:\n  • Re-running it rotates the token for an existing cluster entry.\n  • Using a new --cluster-name appends a second cluster.\n\nSteps performed:\n  1. Creates/updates the ServiceAccount and ClusterRole/ClusterRoleBinding\n     on the target cluster (kubectl apply — safe to re-run).\n  2. Generates a fresh service account token.\n  3. Auto-detects the cluster URL from the active kubeconfig.\n  4. Writes (or updates) the cluster block in app-config.local.yaml.\n\nRestart Backstage after running this command."
+                            args: "  instance-path   Path to the Backstage instance root"
+                            options: "  --cluster-name <name>   Name for the cluster in Backstage (required)\n  --kubeconfig <path>     Path to kubeconfig file (default: ~/.kube/config)\n  --context <ctx>         Kubeconfig context to use\n  --sa-name <name>        ServiceAccount name to create/use (default: backstage-reader)\n  --namespace <ns>        Namespace for the ServiceAccount (default: default)\n  --duration <dur>        Token lifetime, e.g. 8760h, 2160h (default: 8760h = 1 year)\n  --skip-tls-verify       Disable TLS certificate verification"
+                            examples: "  platform cluster configure ./my-backstage --cluster-name kind-backstage\n  platform cluster configure ./my-backstage --cluster-name prod --kubeconfig ~/.kube/prod.yaml --context prod-admin\n  platform cluster configure ./my-backstage --cluster-name kind-backstage --duration 2160h\n  platform cluster configure ./my-backstage --cluster-name kind-backstage --sa-name my-sa --namespace monitoring --skip-tls-verify"
+                        }
+                        return
+                    }
+                    if ($rest | length) < 3 {
+                        utils print-error "Usage: platform cluster configure <instance-path> --cluster-name <name> [flags]"
+                        exit 1
+                    }
+                    let instance_path  = ($rest | get 2)
+                    let cluster_name   = (get-flag $rest "--cluster-name"  | default "")
+                    let kubeconfig     = (get-flag $rest "--kubeconfig"    | default "")
+                    let kube_context   = (get-flag $rest "--context"       | default "")
+                    let sa_name        = (get-flag $rest "--sa-name"       | default "backstage-reader")
+                    let ns             = (get-flag $rest "--namespace"     | default "default")
+                    let duration       = (get-flag $rest "--duration"      | default "8760h")
+                    let skip_tls       = ("--skip-tls-verify" in $rest)
+                    configure-cluster $instance_path --cluster-name $cluster_name --kubeconfig $kubeconfig --context $kube_context --sa-name $sa_name --namespace $ns --duration $duration --skip-tls-verify=$skip_tls
+                },
+                "list" => {
+                    if ("--help" in $rest) or ("-h" in $rest) {
+                        print-subcommand-help {
+                            usage: "platform cluster list <instance-path>"
+                            description: "List all Kubernetes clusters configured in app-config.local.yaml."
+                            args: "  instance-path   Path to the Backstage instance root"
+                            examples: "  platform cluster list ./my-backstage"
+                        }
+                        return
+                    }
+                    if ($rest | length) < 3 {
+                        utils print-error "Usage: platform cluster list <instance-path>"
+                        exit 1
+                    }
+                    list-clusters ($rest | get 2)
+                },
+                _ => {
+                    utils print-error $"Unknown cluster subcommand: ($rest.1)"
+                    utils print-info "Available: configure, list"
+                    exit 1
+                }
+            }
         },
         "deploy" => {
             if ("--help" in $rest) or ("-h" in $rest) {
