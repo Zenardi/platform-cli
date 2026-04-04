@@ -191,22 +191,27 @@ export def configure-cluster [
     } else {
         let tmp = $"/tmp/backstage-sa-rbac-(date now | format date '%Y%m%d%H%M%S%f').yaml"
         $manifest | save --force $tmp
-        ^bash -c $"kubectl apply -f ($tmp)($flags)"
-        let apply_ok = ($env.LAST_EXIT_CODE == 0)
-        rm $tmp
-
-        if not $apply_ok {
+        try {
+            ^bash -c $"kubectl apply -f ($tmp)($flags)"
+        } catch {
+            rm $tmp
             utils print-error "Failed to create ServiceAccount/RBAC"
             exit 1
         }
+        rm $tmp
         utils print-success $"ServiceAccount '($sa_name)' and RBAC ready"
     }
 
     # ── 2. Detect cluster URL (safe to read in dry-run) ───────────────────────
     utils print-header "Cluster URL"
-    let cluster_url = (^bash -c $"kubectl config view --minify -o jsonpath='\{.clusters[0].cluster.server\}'($flags)" | str trim)
-    if $env.LAST_EXIT_CODE != 0 or ($cluster_url | is-empty) {
-        utils print-error "Failed to get cluster URL from kubeconfig"
+    let cluster_url = try {
+        ^bash -c $"kubectl config view --minify -o jsonpath='\{.clusters[0].cluster.server\}'($flags)" | str trim
+    } catch {
+        utils print-error "Failed to get cluster URL from kubeconfig. Is kubectl configured?"
+        exit 1
+    }
+    if ($cluster_url | is-empty) {
+        utils print-error "Cluster URL is empty — check your kubeconfig context"
         exit 1
     }
     utils print-info $"Cluster URL: ($cluster_url)"
@@ -216,8 +221,9 @@ export def configure-cluster [
     if $dry_run {
         utils print-info $"Would generate token for ($sa_name) in namespace ($namespace), duration: ($duration)"
     } else {
-        let token = (^bash -c $"kubectl create token ($sa_name) -n ($namespace) --duration ($duration)($flags)" | str trim)
-        if $env.LAST_EXIT_CODE != 0 {
+        let token = try {
+            ^bash -c $"kubectl create token ($sa_name) -n ($namespace) --duration ($duration)($flags)" | str trim
+        } catch {
             utils print-error "Failed to generate service account token"
             exit 1
         }
