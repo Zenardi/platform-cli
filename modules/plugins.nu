@@ -643,7 +643,7 @@ def patch-entity-page-kubernetes [instance_path: string] {
     let ep_path = ($instance_path + "/packages/app/src/components/catalog/EntityPage.tsx")
     if not ($ep_path | path exists) {
         if (is-new-frontend-system $instance_path) {
-            warn-entity-page-new-system "kubernetes"
+            patch-app-tsx-kubernetes $instance_path
         } else {
             utils print-warning $"EntityPage.tsx not found at ($ep_path) — skipping"
         }
@@ -1008,6 +1008,43 @@ def patch-entity-page [instance_path: string, plugin_name: string] {
 }
 
 # Patch packages/app/src/App.tsx to add the HolidayTrackerPage import and route
+# Patch App.tsx to add kubernetesPlugin for the new declarative frontend system
+def patch-app-tsx-kubernetes [instance_path: string] {
+    let app_path = ($instance_path + "/packages/app/src/App.tsx")
+    if not ($app_path | path exists) {
+        utils print-warning "packages/app/src/App.tsx not found — skipping"
+        return
+    }
+
+    mut content = (open --raw $app_path)
+    mut patched = false
+
+    # 1. Import kubernetesPlugin — inject after the catalogPlugin import line
+    let catalog_import = "import catalogPlugin from '@backstage/plugin-catalog/alpha';"
+    let k8s_import = "import kubernetesPlugin from '@backstage/plugin-kubernetes/alpha';"
+    if not ($content | str contains "plugin-kubernetes/alpha") {
+        if ($content | str contains $catalog_import) {
+            $content = ($content | str replace $catalog_import $"($catalog_import)\n($k8s_import)")
+            $patched = true
+        }
+    }
+
+    # 2. Add kubernetesPlugin to features array
+    if not ($content | str contains "kubernetesPlugin") {
+        if ($content | str contains "features: [catalogPlugin") {
+            $content = ($content | str replace "features: [catalogPlugin" "features: [catalogPlugin, kubernetesPlugin")
+            $patched = true
+        }
+    }
+
+    if $patched {
+        $content | save --force $app_path
+        utils print-success "packages/app/src/App.tsx patched (kubernetesPlugin added to features)"
+    } else {
+        utils print-info "App.tsx already has Kubernetes configured"
+    }
+}
+
 def patch-app-tsx-holiday-tracker [instance_path: string] {
     let app_path = ($instance_path + "/packages/app/src/App.tsx")
     if not ($app_path | path exists) {
@@ -1123,6 +1160,7 @@ def patch-app-tsx-infrawallet [instance_path: string] {
 
 def patch-app-tsx [instance_path: string, plugin_name: string] {
     match $plugin_name {
+        "kubernetes"      => { patch-app-tsx-kubernetes      $instance_path }
         "holiday-tracker" => { patch-app-tsx-holiday-tracker $instance_path }
         "cost-insights"   => { patch-app-tsx-cost-insights   $instance_path }
         "infrawallet"     => { patch-app-tsx-infrawallet      $instance_path }
