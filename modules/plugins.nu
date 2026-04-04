@@ -138,8 +138,22 @@ Manual steps remaining:
   1. Add entity annotation to catalog-info.yaml:
        backstage.io/kubernetes-id: <service-name>
 
-  2. Update app-config.yaml cluster URL and set K8S_SERVICE_ACCOUNT_TOKEN
-     (or configure OIDC/other auth).
+  2. Register your cluster so Backstage can query it:
+
+       platform cluster configure ./your-instance --cluster-name <cluster-name> --skip-tls-verify
+
+     This creates the ServiceAccount + RBAC on the cluster, generates a
+     service account token, and writes the cluster block into
+     app-config.local.yaml automatically.
+
+     Run it again at any time to rotate the token.
+     Use --dry-run first to preview what will happen:
+
+       platform cluster configure ./your-instance --cluster-name <cluster-name> --dry-run
+
+  3. Restart Backstage after step 2:
+
+       yarn start
 "
         }
         "techdocs": {
