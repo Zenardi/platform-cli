@@ -147,6 +147,8 @@ def kube-flags [kubeconfig: string, context: string] {
 #   2. Generates a fresh service account token (default: 1 year).
 #   3. Auto-detects the cluster URL from the active kubeconfig.
 #   4. Writes (or updates) the cluster block in app-config.local.yaml.
+#
+# Use --dry-run to preview all steps without making any changes.
 export def configure-cluster [
     backstage_path: string                  # Path to the Backstage instance root
     --cluster-name: string                  # Name for this cluster in Backstage (required)
@@ -156,6 +158,7 @@ export def configure-cluster [
     --namespace: string = "default"         # Namespace for the ServiceAccount
     --duration: string = "8760h"            # Token lifetime (default: 8760h = 1 year)
     --skip-tls-verify = false               # Disable TLS certificate verification
+    --dry-run = false                       # Preview what would happen without making changes
 ] {
     utils require-command "kubectl" "kubectl (https://kubernetes.io/docs/tasks/tools/)"
 
@@ -172,33 +175,35 @@ export def configure-cluster [
 
     let flags = (kube-flags $kubeconfig $context)
 
+    if $dry_run {
+        utils print-warning "DRY-RUN mode — no changes will be made"
+    }
+
     # ── 1. Create/update ServiceAccount + RBAC ──────────────────────────────
-    utils print-header "Creating ServiceAccount and RBAC"
+    utils print-header "ServiceAccount and RBAC"
     utils print-info $"ServiceAccount: ($sa_name) in namespace ($namespace)"
 
-    let tmp = $"/tmp/backstage-sa-rbac-(date now | format date '%Y%m%d%H%M%S%f').yaml"
-    (build-sa-rbac-manifest $sa_name $namespace) | save --force $tmp
-    ^bash -c $"kubectl apply -f ($tmp)($flags)"
-    let apply_ok = ($env.LAST_EXIT_CODE == 0)
-    rm $tmp
+    let manifest = (build-sa-rbac-manifest $sa_name $namespace)
 
-    if not $apply_ok {
-        utils print-error "Failed to create ServiceAccount/RBAC"
-        exit 1
+    if $dry_run {
+        utils print-info "Would apply the following manifest:"
+        print $manifest
+    } else {
+        let tmp = $"/tmp/backstage-sa-rbac-(date now | format date '%Y%m%d%H%M%S%f').yaml"
+        $manifest | save --force $tmp
+        ^bash -c $"kubectl apply -f ($tmp)($flags)"
+        let apply_ok = ($env.LAST_EXIT_CODE == 0)
+        rm $tmp
+
+        if not $apply_ok {
+            utils print-error "Failed to create ServiceAccount/RBAC"
+            exit 1
+        }
+        utils print-success $"ServiceAccount '($sa_name)' and RBAC ready"
     }
-    utils print-success $"ServiceAccount '($sa_name)' and RBAC ready"
 
-    # ── 2. Generate service account token ────────────────────────────────────
-    utils print-header "Generating Service Account Token"
-    let token = (^bash -c $"kubectl create token ($sa_name) -n ($namespace) --duration ($duration)($flags)" | str trim)
-    if $env.LAST_EXIT_CODE != 0 {
-        utils print-error "Failed to generate service account token"
-        exit 1
-    }
-    utils print-success $"Token generated — expires in ($duration)"
-
-    # ── 3. Detect cluster URL ─────────────────────────────────────────────────
-    utils print-header "Detecting Cluster URL"
+    # ── 2. Detect cluster URL (safe to read in dry-run) ───────────────────────
+    utils print-header "Cluster URL"
     let cluster_url = (^bash -c $"kubectl config view --minify -o jsonpath='\{.clusters[0].cluster.server\}'($flags)" | str trim)
     if $env.LAST_EXIT_CODE != 0 or ($cluster_url | is-empty) {
         utils print-error "Failed to get cluster URL from kubeconfig"
@@ -206,24 +211,49 @@ export def configure-cluster [
     }
     utils print-info $"Cluster URL: ($cluster_url)"
 
-    # ── 4. Upsert cluster in app-config.local.yaml ───────────────────────────
-    utils print-header "Updating Backstage Config"
-    let config_path = ($expanded + "/app-config.local.yaml")
-    let existing_config = if ($config_path | path exists) { open $config_path } else { {} }
+    # ── 3. Generate service account token ────────────────────────────────────
+    utils print-header "Service Account Token"
+    if $dry_run {
+        utils print-info $"Would generate token for ($sa_name) in namespace ($namespace), duration: ($duration)"
+    } else {
+        let token = (^bash -c $"kubectl create token ($sa_name) -n ($namespace) --duration ($duration)($flags)" | str trim)
+        if $env.LAST_EXIT_CODE != 0 {
+            utils print-error "Failed to generate service account token"
+            exit 1
+        }
+        utils print-success $"Token generated — expires in ($duration)"
 
-    let cluster_entry = {
-        url: $cluster_url
-        name: $cluster_name
-        authProvider: "serviceAccount"
-        serviceAccountToken: $token
-        skipTLSVerify: $skip_tls_verify
+        # ── 4. Upsert cluster in app-config.local.yaml ───────────────────────
+        utils print-header "Backstage Config"
+        let config_path = ($expanded + "/app-config.local.yaml")
+        let existing_config = if ($config_path | path exists) { open $config_path } else { {} }
+
+        let cluster_entry = {
+            url: $cluster_url
+            name: $cluster_name
+            authProvider: "serviceAccount"
+            serviceAccountToken: $token
+            skipTLSVerify: $skip_tls_verify
+        }
+
+        let updated_config = (upsert-cluster-in-config $existing_config $cluster_entry)
+        $updated_config | to yaml | save --force $config_path
+
+        utils print-success $"Cluster '($cluster_name)' written to app-config.local.yaml"
+        utils print-warning "Restart Backstage (yarn start) to apply the new cluster configuration"
     }
 
-    let updated_config = (upsert-cluster-in-config $existing_config $cluster_entry)
-    $updated_config | to yaml | save --force $config_path
-
-    utils print-success $"Cluster '($cluster_name)' written to app-config.local.yaml"
-    utils print-warning "Restart Backstage (yarn start) to apply the new cluster configuration"
+    if $dry_run {
+        utils print-header "Dry-run Summary"
+        utils print-info $"cluster-name:    ($cluster_name)"
+        utils print-info $"cluster-url:     ($cluster_url)"
+        utils print-info $"sa-name:         ($sa_name)"
+        utils print-info $"namespace:       ($namespace)"
+        utils print-info $"duration:        ($duration)"
+        utils print-info $"skip-tls-verify: ($skip_tls_verify)"
+        utils print-info $"config-target:   (($expanded) + '/app-config.local.yaml')"
+        utils print-warning "Re-run without --dry-run to apply these changes"
+    }
 }
 
 # List all Kubernetes clusters configured in app-config.local.yaml.

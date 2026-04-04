@@ -37,6 +37,8 @@ Automates scaffolding, plugin installation, auth provider setup, catalog entity 
     - [`platform validate`](#platform-validate)
     - [`platform dockerfile`](#platform-dockerfile)
     - [`platform k8s`](#platform-k8s)
+    - [`platform cluster configure`](#platform-cluster-configure)
+    - [`platform cluster list`](#platform-cluster-list)
     - [`platform deploy`](#platform-deploy)
   - [Catalog Entity Format](#catalog-entity-format)
   - [Project Structure](#project-structure)
@@ -137,6 +139,10 @@ platform validate ./my-backstage
 # 6. Generate Docker and Kubernetes deployment files
 platform dockerfile ./my-backstage
 platform k8s ./my-backstage --image ghcr.io/myorg/backstage:latest --host backstage.example.com
+
+# 7. Register a Kubernetes cluster (creates SA + RBAC, generates token, updates app-config.local.yaml)
+platform cluster configure ./my-backstage --cluster-name kind-backstage --skip-tls-verify
+platform cluster list ./my-backstage
 ```
 
 ---
@@ -664,6 +670,98 @@ kubectl apply -f ./my-backstage/k8s/
 
 ---
 
+### `platform cluster configure`
+
+Create or update a Kubernetes cluster in `app-config.local.yaml`. This command:
+
+1. Creates/updates the `ServiceAccount`, `ClusterRole`, and `ClusterRoleBinding` on the target cluster (`kubectl apply` — idempotent, safe to re-run).
+2. Generates a fresh service account token.
+3. Auto-detects the cluster URL from the active kubeconfig.
+4. Writes (or updates) the cluster block in `app-config.local.yaml`.
+
+**Re-running the command rotates the token** for an existing cluster entry. Providing a different `--cluster-name` appends a second cluster without affecting the first.
+
+```
+platform cluster configure <instance-path> --cluster-name <name> [options]
+```
+
+| Argument / Option | Default | Description |
+|---|---|---|
+| `instance-path` *(required)* | — | Path to the Backstage instance root. |
+| `--cluster-name <name>` *(required)* | — | Name for this cluster in Backstage (used as the display name). |
+| `--kubeconfig <path>` | `~/.kube/config` | Path to a kubeconfig file. Useful for managing multiple clusters. |
+| `--context <ctx>` | *(active context)* | Kubeconfig context to use. |
+| `--sa-name <name>` | `backstage-reader` | Name of the `ServiceAccount` to create or reuse. |
+| `--namespace <ns>` | `default` | Namespace where the `ServiceAccount` is created. |
+| `--duration <dur>` | `8760h` (1 year) | Token lifetime. Examples: `8760h` (1y), `2160h` (90d), `720h` (30d). |
+| `--skip-tls-verify` | `false` | Disable TLS certificate verification (useful for KIND/local clusters). |
+| `--dry-run` | `false` | Preview all steps (RBAC manifest, cluster URL, config diff) without making any changes. |
+
+The `ClusterRole` grants `get`, `list`, `watch` on all resource types the Backstage Kubernetes plugin queries:
+
+| API Group | Resources |
+|---|---|
+| `""` (core) | pods, services, configmaps, events, namespaces, limitranges, resourcequotas |
+| `apps` | deployments, replicasets, statefulsets, daemonsets |
+| `autoscaling` | horizontalpodautoscalers |
+| `networking.k8s.io` | ingresses |
+| `batch` | jobs, cronjobs |
+| `metrics.k8s.io` | pods, nodes |
+
+```nushell
+# Preview what would happen — no changes made
+platform cluster configure ./my-backstage \
+  --cluster-name kind-backstage \
+  --skip-tls-verify \
+  --dry-run
+
+# Register the KIND cluster (first time or token rotation)
+platform cluster configure ./my-backstage \
+  --cluster-name kind-backstage \
+  --skip-tls-verify
+
+# Use a custom SA name, non-default namespace, and shorter token lifetime
+platform cluster configure ./my-backstage \
+  --cluster-name kind-backstage \
+  --sa-name my-backstage-reader \
+  --namespace monitoring \
+  --duration 720h \
+  --skip-tls-verify
+
+# Register a second cluster (appends — does not replace the first)
+platform cluster configure ./my-backstage \
+  --cluster-name prod-eks \
+  --kubeconfig ~/.kube/prod.yaml \
+  --context prod-admin
+
+# Rotate the token for an existing cluster (re-run same command)
+platform cluster configure ./my-backstage --cluster-name kind-backstage --skip-tls-verify
+```
+
+> [!IMPORTANT]
+> `app-config.local.yaml` is gitignored. The service account token is a secret — never commit it.
+> Restart Backstage (`yarn start`) after running this command for the change to take effect.
+
+---
+
+### `platform cluster list`
+
+Show all Kubernetes clusters currently configured in `app-config.local.yaml`.
+
+```
+platform cluster list <instance-path>
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `instance-path` *(required)* | — | Path to the Backstage instance root. |
+
+```nushell
+platform cluster list ./my-backstage
+```
+
+---
+
 ### `platform deploy`
 
 Validate the instance and prepare it for production deployment.
@@ -719,6 +817,7 @@ platform-cli/
 │   ├── app-config.nu   # platform config *
 │   ├── dockerfile.nu   # platform dockerfile
 │   ├── kubernetes.nu   # platform k8s
+│   ├── cluster.nu      # platform cluster
 │   └── utils.nu        # Shared helpers
 ├── templates/
 ├── tests/

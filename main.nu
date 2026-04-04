@@ -808,7 +808,7 @@ def --wrapped main [...rest] {
                             usage: "platform cluster configure <instance-path> --cluster-name <name> [flags]"
                             description: "Create or update a Kubernetes cluster in app-config.local.yaml.\n\nThis command is idempotent:\n  • Re-running it rotates the token for an existing cluster entry.\n  • Using a new --cluster-name appends a second cluster.\n\nSteps performed:\n  1. Creates/updates the ServiceAccount and ClusterRole/ClusterRoleBinding\n     on the target cluster (kubectl apply — safe to re-run).\n  2. Generates a fresh service account token.\n  3. Auto-detects the cluster URL from the active kubeconfig.\n  4. Writes (or updates) the cluster block in app-config.local.yaml.\n\nRestart Backstage after running this command."
                             args: "  instance-path   Path to the Backstage instance root"
-                            options: "  --cluster-name <name>   Name for the cluster in Backstage (required)\n  --kubeconfig <path>     Path to kubeconfig file (default: ~/.kube/config)\n  --context <ctx>         Kubeconfig context to use\n  --sa-name <name>        ServiceAccount name to create/use (default: backstage-reader)\n  --namespace <ns>        Namespace for the ServiceAccount (default: default)\n  --duration <dur>        Token lifetime, e.g. 8760h, 2160h (default: 8760h = 1 year)\n  --skip-tls-verify       Disable TLS certificate verification"
+                            options: "  --cluster-name <name>   Name for the cluster in Backstage (required)\n  --kubeconfig <path>     Path to kubeconfig file (default: ~/.kube/config)\n  --context <ctx>         Kubeconfig context to use\n  --sa-name <name>        ServiceAccount name to create/use (default: backstage-reader)\n  --namespace <ns>        Namespace for the ServiceAccount (default: default)\n  --duration <dur>        Token lifetime, e.g. 8760h, 2160h (default: 8760h = 1 year)\n  --skip-tls-verify       Disable TLS certificate verification\n  --dry-run               Preview all steps without making any changes"
                             examples: "  platform cluster configure ./my-backstage --cluster-name kind-backstage\n  platform cluster configure ./my-backstage --cluster-name prod --kubeconfig ~/.kube/prod.yaml --context prod-admin\n  platform cluster configure ./my-backstage --cluster-name kind-backstage --duration 2160h\n  platform cluster configure ./my-backstage --cluster-name kind-backstage --sa-name my-sa --namespace monitoring --skip-tls-verify"
                         }
                         return
@@ -825,7 +825,8 @@ def --wrapped main [...rest] {
                     let ns             = (get-flag $rest "--namespace"     | default "default")
                     let duration       = (get-flag $rest "--duration"      | default "8760h")
                     let skip_tls       = ("--skip-tls-verify" in $rest)
-                    configure-cluster $instance_path --cluster-name $cluster_name --kubeconfig $kubeconfig --context $kube_context --sa-name $sa_name --namespace $ns --duration $duration --skip-tls-verify=$skip_tls
+                    let dry_run        = ("--dry-run" in $rest)
+                    configure-cluster $instance_path --cluster-name $cluster_name --kubeconfig $kubeconfig --context $kube_context --sa-name $sa_name --namespace $ns --duration $duration --skip-tls-verify=$skip_tls --dry-run=$dry_run
                 },
                 "list" => {
                     if ("--help" in $rest) or ("-h" in $rest) {
