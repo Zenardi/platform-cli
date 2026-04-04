@@ -11,6 +11,8 @@ use modules/entities.nu *
 use modules/auth.nu *
 use modules/dockerfile.nu *
 use modules/kubernetes.nu *
+use modules/actions.nu *
+use modules/cluster.nu *
 use config.nu
 
 def print-banner [] {
@@ -38,25 +40,35 @@ def print-help [] {
   plugin add           Install a plugin into a Backstage instance
   plugin remove        Remove a plugin from a Backstage instance
   plugin info          Show install instructions for a plugin
+  plugin installed     List plugins currently installed in a Backstage instance
   auth list            List available auth providers
   auth add             Install and configure an auth provider
   auth info            Show full setup guide for an auth provider
+  action list          List available custom scaffolder actions
+  action add           Install a custom scaffolder action into a Backstage instance
+  action info          Show details and usage for a custom scaffolder action
   config               Configuration management
   entity               Entity catalog management
   validate             Validate Backstage setup
   dockerfile           Generate a production Dockerfile and .dockerignore
   k8s                  Generate Kubernetes manifests (Deployment, Service, Ingress, Secrets)
+  cluster              Manage Kubernetes cluster config in app-config.local.yaml
   deploy               Prepare for production deployment
   help                 Show this help message
 
 Examples:
   platform init my-backstage
   platform plugin list
+  platform plugin info kubernetes
   platform plugin add azure-devops ./my-backstage
+  platform plugin installed ./my-backstage
   platform auth list
   platform auth info microsoft
   platform auth add microsoft ./my-backstage
   platform auth add microsoft ./my-backstage --client-id abc --client-secret xyz --tenant-id tid
+  platform action list
+  platform action info azure-pipeline
+  platform action add azure-pipeline ./my-backstage
   platform config set-database ./my-backstage --db-type postgresql
   platform entity create my-service --type component
   platform validate ./my-backstage
@@ -64,6 +76,10 @@ Examples:
   platform dockerfile ./my-backstage --output ./deploy/Dockerfile
   platform k8s ./my-backstage
   platform k8s ./my-backstage --image ghcr.io/myorg/backstage:v1.0 --host backstage.mycompany.io
+  platform cluster configure ./my-backstage --cluster-name kind-backstage
+  platform cluster configure ./my-backstage --cluster-name prod-cluster --kubeconfig ~/.kube/prod.yaml --sa-name backstage-reader
+  platform cluster configure ./my-backstage --cluster-name kind-backstage --duration 2160h
+  platform cluster list ./my-backstage
   
 See 'platform auth info <provider>' or 'platform plugin info <name>' for detailed setup guides.
 "
@@ -349,8 +365,8 @@ def --wrapped main [...rest] {
             if ($rest | length) < 2 or $rest.1 == "--help" or $rest.1 == "-h" {
                 print-subcommand-help {
                     usage: "platform plugin <subcommand> [args]"
-                    description: "Manage plugins for a Backstage instance.\nSubcommands: add, remove, list, info"
-                    examples: "  platform plugin list\n  platform plugin info kubernetes\n  platform plugin add kubernetes ./my-backstage\n  platform plugin remove kubernetes ./my-backstage"
+                    description: "Manage plugins for a Backstage instance.\nSubcommands: add, remove, list, info, installed"
+                    examples: "  platform plugin list\n  platform plugin info kubernetes\n  platform plugin add kubernetes ./my-backstage\n  platform plugin remove kubernetes ./my-backstage\n  platform plugin installed ./my-backstage"
                 }
                 return
             }
@@ -410,8 +426,24 @@ def --wrapped main [...rest] {
                     }
                     show-plugin-info ($rest | get 2)
                 },
+                "installed" => {
+                    if ("--help" in $rest) or ("-h" in $rest) {
+                        print-subcommand-help {
+                            usage: "platform plugin installed <instance-path>"
+                            description: "List all CLI-registered plugins that are currently installed in a Backstage instance.\nScans packages/app/package.json and packages/backend/package.json for known plugin packages\nand cross-references them against the CLI plugin registry."
+                            args: "  instance-path   Path to the Backstage instance root"
+                            examples: "  platform plugin installed ./my-backstage\n  platform plugin installed ."
+                        }
+                        return
+                    }
+                    if ($rest | length) < 3 {
+                        utils print-error "Usage: platform plugin installed <instance-path>"
+                        exit 1
+                    }
+                    print-installed-plugins ($rest | get 2)
+                },
                 _ => {
-                    utils print-error $"Unknown plugin command: ($rest.1). Available: add, remove, list, info"
+                    utils print-error $"Unknown plugin command: ($rest.1). Available: add, remove, list, info, installed"
                     exit 1
                 }
             }
@@ -760,6 +792,65 @@ def --wrapped main [...rest] {
             let reps     = ($reps_str | into int)
             generate-k8s-manifests ($rest | get 1) --namespace $ns --image $img --host $host_val --replicas $reps
         },
+        "cluster" => {
+            if ($rest | length) < 2 or $rest.1 == "--help" or $rest.1 == "-h" {
+                print-subcommand-help {
+                    usage: "platform cluster <subcommand> [args]"
+                    description: "Manage Kubernetes cluster configuration in app-config.local.yaml.\n\nSubcommands:\n  configure   Create/update ServiceAccount+RBAC, generate token, and register\n              the cluster in app-config.local.yaml (idempotent — re-run to rotate token).\n  list        Show clusters already configured in app-config.local.yaml."
+                    examples: "  platform cluster configure ./my-backstage --cluster-name kind-backstage\n  platform cluster configure ./my-backstage --cluster-name prod --kubeconfig ~/.kube/prod.yaml\n  platform cluster configure ./my-backstage --cluster-name kind-backstage --duration 2160h\n  platform cluster configure ./my-backstage --cluster-name kind-backstage --sa-name my-sa --namespace monitoring\n  platform cluster list ./my-backstage"
+                }
+                return
+            }
+            match $rest.1 {
+                "configure" => {
+                    if ("--help" in $rest) or ("-h" in $rest) {
+                        print-subcommand-help {
+                            usage: "platform cluster configure <instance-path> --cluster-name <name> [flags]"
+                            description: "Create or update a Kubernetes cluster in app-config.local.yaml.\n\nThis command is idempotent:\n  • Re-running it rotates the token for an existing cluster entry.\n  • Using a new --cluster-name appends a second cluster.\n\nSteps performed:\n  1. Creates/updates the ServiceAccount and ClusterRole/ClusterRoleBinding\n     on the target cluster (kubectl apply — safe to re-run).\n  2. Generates a fresh service account token.\n  3. Auto-detects the cluster URL from the active kubeconfig.\n  4. Writes (or updates) the cluster block in app-config.local.yaml.\n\nRestart Backstage after running this command."
+                            args: "  instance-path   Path to the Backstage instance root"
+                            options: "  --cluster-name <name>   Name for the cluster in Backstage (required)\n  --kubeconfig <path>     Path to kubeconfig file (default: ~/.kube/config)\n  --context <ctx>         Kubeconfig context to use\n  --sa-name <name>        ServiceAccount name to create/use (default: backstage-reader)\n  --namespace <ns>        Namespace for the ServiceAccount (default: default)\n  --duration <dur>        Token lifetime, e.g. 8760h, 2160h (default: 8760h = 1 year)\n  --skip-tls-verify       Disable TLS certificate verification\n  --dry-run               Preview all steps without making any changes"
+                            examples: "  platform cluster configure ./my-backstage --cluster-name kind-backstage\n  platform cluster configure ./my-backstage --cluster-name prod --kubeconfig ~/.kube/prod.yaml --context prod-admin\n  platform cluster configure ./my-backstage --cluster-name kind-backstage --duration 2160h\n  platform cluster configure ./my-backstage --cluster-name kind-backstage --sa-name my-sa --namespace monitoring --skip-tls-verify"
+                        }
+                        return
+                    }
+                    if ($rest | length) < 3 {
+                        utils print-error "Usage: platform cluster configure <instance-path> --cluster-name <name> [flags]"
+                        exit 1
+                    }
+                    let instance_path  = ($rest | get 2)
+                    let cluster_name   = (get-flag $rest "--cluster-name"  | default "")
+                    let kubeconfig     = (get-flag $rest "--kubeconfig"    | default "")
+                    let kube_context   = (get-flag $rest "--context"       | default "")
+                    let sa_name        = (get-flag $rest "--sa-name"       | default "backstage-reader")
+                    let ns             = (get-flag $rest "--namespace"     | default "default")
+                    let duration       = (get-flag $rest "--duration"      | default "8760h")
+                    let skip_tls       = ("--skip-tls-verify" in $rest)
+                    let dry_run        = ("--dry-run" in $rest)
+                    configure-cluster $instance_path --cluster-name $cluster_name --kubeconfig $kubeconfig --context $kube_context --sa-name $sa_name --namespace $ns --duration $duration --skip-tls-verify=$skip_tls --dry-run=$dry_run
+                },
+                "list" => {
+                    if ("--help" in $rest) or ("-h" in $rest) {
+                        print-subcommand-help {
+                            usage: "platform cluster list <instance-path>"
+                            description: "List all Kubernetes clusters configured in app-config.local.yaml."
+                            args: "  instance-path   Path to the Backstage instance root"
+                            examples: "  platform cluster list ./my-backstage"
+                        }
+                        return
+                    }
+                    if ($rest | length) < 3 {
+                        utils print-error "Usage: platform cluster list <instance-path>"
+                        exit 1
+                    }
+                    list-clusters ($rest | get 2)
+                },
+                _ => {
+                    utils print-error $"Unknown cluster subcommand: ($rest.1)"
+                    utils print-info "Available: configure, list"
+                    exit 1
+                }
+            }
+        },
         "deploy" => {
             if ("--help" in $rest) or ("-h" in $rest) {
                 print-subcommand-help {
@@ -779,6 +870,58 @@ def --wrapped main [...rest] {
         },
         "help" | "--help" | "-h" => {
             print-help
+        },
+        "action" => {
+            if ($rest | length) < 2 or $rest.1 == "--help" or $rest.1 == "-h" {
+                print-subcommand-help {
+                    usage: "platform action <subcommand> [args]"
+                    description: "Manage custom scaffolder actions for a Backstage instance.\nSubcommands: add, list, info"
+                    examples: "  platform action list\n  platform action info azure-pipeline\n  platform action add azure-pipeline ./my-backstage"
+                }
+                return
+            }
+            match $rest.1 {
+                "add" => {
+                    if ("--help" in $rest) or ("-h" in $rest) {
+                        print-subcommand-help {
+                            usage: "platform action add <name> <instance-path>"
+                            description: "Install a custom scaffolder action into a Backstage instance.\nCreates the TypeScript source file under packages/backend/src/extensions/\nand registers it in packages/backend/src/index.ts.\n\nRestart the Backstage backend after running this command."
+                            args: "  name            Action name (see 'platform action list')\n  instance-path   Path to the Backstage instance root"
+                            examples: "  platform action add azure-pipeline ./my-backstage"
+                        }
+                        return
+                    }
+                    if ($rest | length) < 4 {
+                        utils print-error "Usage: platform action add <name> <instance-path>"
+                        exit 1
+                    }
+                    install-action ($rest | get 2) ($rest | get 3)
+                },
+                "list" => {
+                    list-available-actions
+                },
+                "info" => {
+                    if ("--help" in $rest) or ("-h" in $rest) {
+                        print-subcommand-help {
+                            usage: "platform action info <name>"
+                            description: "Show details, inputs, outputs and template usage for a custom scaffolder action."
+                            args: "  name    Action name (see 'platform action list')"
+                            examples: "  platform action info azure-pipeline"
+                        }
+                        return
+                    }
+                    if ($rest | length) < 3 {
+                        utils print-error "Usage: platform action info <name>"
+                        exit 1
+                    }
+                    show-action-info ($rest | get 2)
+                },
+                _ => {
+                    utils print-error $"Unknown action subcommand: ($rest.1)"
+                    utils print-info "Available: add, list, info"
+                    exit 1
+                }
+            }
         },
         _ => {
             utils print-error $"Unknown command: ($rest.0)"

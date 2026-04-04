@@ -17,9 +17,11 @@ def plugin-registry [] {
     {
         "azure-devops": {
             name: "Azure DevOps"
-            description: "Azure Pipelines, Repos, Git Tags and README for entity pages"
-            frontend_pkg: "@backstage-community/plugin-azure-devops"
-            backend_pkg:  "@backstage-community/plugin-azure-devops-backend"
+            description: "Azure Pipelines, Repos, Git Tags and README for entity pages. Also registers the publish:azure scaffolder action."
+            frontend_pkg:   "@backstage-community/plugin-azure-devops"
+            backend_pkg:    "@backstage-community/plugin-azure-devops-backend"
+            scaffolder_pkg:     "@backstage/plugin-scaffolder-backend-module-azure"
+            scaffolder_actions: "publish:azure"
             app_config: "
 integrations:
   azure:
@@ -27,37 +29,57 @@ integrations:
       credentials:
         - organizations:
             - <your-org>
-          clientId: ${AZURE_CLIENT_ID}
-          clientSecret: ${AZURE_CLIENT_SECRET}
-          tenantId: ${AZURE_TENANT_ID}
+          # Production (AKS/Azure-hosted): use managed identity — no secrets needed
+          managedIdentityClientId: \${AZURE_MANAGED_IDENTITY_CLIENT_ID}
+          tenantId: \${AZURE_TENANT_ID}
 "
             local_config: "
+# ── Azure DevOps — LOCAL DEVELOPMENT CREDENTIALS ─────────────────────────────
+# Managed Identity does NOT work on a local machine (requires Azure-hosted infra).
+# Use clientId + clientSecret for local dev. Generate a client secret in:
+#   Azure Portal → App Registrations → your app → Certificates & Secrets
 integrations:
   azure:
     - host: dev.azure.com
       credentials:
         - organizations:
             - YOUR_AZURE_ORG
-          clientId: ${AZURE_CLIENT_ID}
-          clientSecret: ${AZURE_CLIENT_SECRET}
-          tenantId: ${AZURE_TENANT_ID}
+          clientId: \${AZURE_APP_REGISTRATION_CLIENT_ID}
+          clientSecret: \${AZURE_APP_REGISTRATION_CLIENT_SECRET}
+          tenantId: \${AZURE_TENANT_ID}
 "
             notes: "
 Automated by CLI:
   ✓ Backend package installed
   ✓ Frontend package installed
-  ✓ app-config.yaml updated
-  ✓ app-config.local.yaml updated with integrations.azure block
-  ✓ packages/backend/src/index.ts patched
+  ✓ Scaffolder module installed (@backstage/plugin-scaffolder-backend-module-azure)
+  ✓ app-config.yaml updated (production — uses managed identity)
+  ✓ app-config.local.yaml updated (local dev — uses clientId + clientSecret)
+  ✓ packages/backend/src/index.ts patched (azure-devops-backend + scaffolder module)
   ✓ EntityPage.tsx patched (legacy system) OR see manual step below for new system
 
 Manual steps remaining:
   1. Replace YOUR_AZURE_ORG in app-config.local.yaml with your Azure DevOps org name
-  2. Set environment variables: AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID
-     (or use a Personal Access Token: personalAccessToken: \${AZURE_TOKEN})
-  3. Add entity annotation to catalog-info.yaml:
+  2. For local dev — set these environment variables:
+       AZURE_APP_REGISTRATION_CLIENT_ID   (app registration client ID)
+       AZURE_APP_REGISTRATION_CLIENT_SECRET (client secret from Azure Portal)
+       AZURE_TENANT_ID
+  3. For production (AKS) — set AZURE_MANAGED_IDENTITY_CLIENT_ID in app-config.yaml
+  4. Add the app registration as a member of your Azure DevOps organization:
+       https://dev.azure.com/{YOUR_ORG}/_settings/users
+       License: Basic | Group: Project Contributors
+  5. Add entity annotation to catalog-info.yaml:
        dev.azure.com/project-repo: <project>/<repo>
-  4. New frontend system only: add @backstage-community/plugin-azure-devops/alpha to features[] in App.tsx
+  6. New frontend system only: add @backstage-community/plugin-azure-devops/alpha to features[] in App.tsx
+
+⚠ IMPORTANT — Managed Identity only works in Azure-hosted environments (AKS, App Service, VM).
+  If you run Backstage locally and use managedIdentityClientId you will get:
+  'ManagedIdentityCredential: Network unreachable'
+  Use clientId + clientSecret in app-config.local.yaml for local development.
+
+Scaffolder action available after installation:
+  publish:azure — publishes a repository to Azure DevOps
+  See: https://backstage.io/docs/features/software-templates/builtin-actions/
 
   Docs: https://github.com/backstage/community-plugins/tree/main/workspaces/azure-devops
 "
@@ -116,8 +138,22 @@ Manual steps remaining:
   1. Add entity annotation to catalog-info.yaml:
        backstage.io/kubernetes-id: <service-name>
 
-  2. Update app-config.yaml cluster URL and set K8S_SERVICE_ACCOUNT_TOKEN
-     (or configure OIDC/other auth).
+  2. Register your cluster so Backstage can query it:
+
+       platform cluster configure ./your-instance --cluster-name <cluster-name> --skip-tls-verify
+
+     This creates the ServiceAccount + RBAC on the cluster, generates a
+     service account token, and writes the cluster block into
+     app-config.local.yaml automatically.
+
+     Run it again at any time to rotate the token.
+     Use --dry-run first to preview what will happen:
+
+       platform cluster configure ./your-instance --cluster-name <cluster-name> --dry-run
+
+  3. Restart Backstage after step 2:
+
+       yarn start
 "
         }
         "techdocs": {
@@ -520,6 +556,34 @@ def patch-backend-plugin-index [instance_path: string, plugin: record] {
     utils print-success "packages/backend/src/index.ts updated"
 }
 
+# Install and register an additional scaffolder backend module in packages/backend/src/index.ts.
+# Used for plugins that provide Backstage scaffolder actions (e.g. publish:azure).
+export def patch-scaffolder-module-index [
+    instance_path: string  # Path to the Backstage instance root
+    pkg: string            # Scaffolder module package name (e.g. @backstage/plugin-scaffolder-backend-module-azure)
+] {
+    let index_path = ($instance_path + "/packages/backend/src/index.ts")
+    if not ($index_path | path exists) {
+        utils print-warning $"packages/backend/src/index.ts not found — skipping scaffolder module patch"
+        return
+    }
+
+    let content = (open --raw $index_path)
+
+    if ($content | str contains $pkg) {
+        utils print-info $"index.ts already registers ($pkg)"
+        return
+    }
+
+    # Back up before patching
+    $content | save --force ($index_path + ".bak")
+
+    let new_line = $"backend.add\(import\('($pkg)'\)\);"
+    let new_content = $content | str replace "backend.start();" ($new_line + "\n\nbackend.start();")
+    $new_content | save --force $index_path
+    utils print-success $"packages/backend/src/index.ts patched with ($pkg)"
+}
+
 # Detect whether the instance uses the new declarative frontend system.
 # Returns true if App.tsx imports from @backstage/frontend-defaults (new system),
 # false if it uses the legacy createApp from @backstage/app-defaults.
@@ -593,7 +657,7 @@ def patch-entity-page-kubernetes [instance_path: string] {
     let ep_path = ($instance_path + "/packages/app/src/components/catalog/EntityPage.tsx")
     if not ($ep_path | path exists) {
         if (is-new-frontend-system $instance_path) {
-            warn-entity-page-new-system "kubernetes"
+            patch-app-tsx-kubernetes $instance_path
         } else {
             utils print-warning $"EntityPage.tsx not found at ($ep_path) — skipping"
         }
@@ -958,6 +1022,43 @@ def patch-entity-page [instance_path: string, plugin_name: string] {
 }
 
 # Patch packages/app/src/App.tsx to add the HolidayTrackerPage import and route
+# Patch App.tsx to add kubernetesPlugin for the new declarative frontend system
+def patch-app-tsx-kubernetes [instance_path: string] {
+    let app_path = ($instance_path + "/packages/app/src/App.tsx")
+    if not ($app_path | path exists) {
+        utils print-warning "packages/app/src/App.tsx not found — skipping"
+        return
+    }
+
+    mut content = (open --raw $app_path)
+    mut patched = false
+
+    # 1. Import kubernetesPlugin — inject after the catalogPlugin import line
+    let catalog_import = "import catalogPlugin from '@backstage/plugin-catalog/alpha';"
+    let k8s_import = "import kubernetesPlugin from '@backstage/plugin-kubernetes/alpha';"
+    if not ($content | str contains "plugin-kubernetes/alpha") {
+        if ($content | str contains $catalog_import) {
+            $content = ($content | str replace $catalog_import $"($catalog_import)\n($k8s_import)")
+            $patched = true
+        }
+    }
+
+    # 2. Add kubernetesPlugin to features array
+    if not ($content | str contains "kubernetesPlugin") {
+        if ($content | str contains "features: [catalogPlugin") {
+            $content = ($content | str replace "features: [catalogPlugin" "features: [catalogPlugin, kubernetesPlugin")
+            $patched = true
+        }
+    }
+
+    if $patched {
+        $content | save --force $app_path
+        utils print-success "packages/app/src/App.tsx patched (kubernetesPlugin added to features)"
+    } else {
+        utils print-info "App.tsx already has Kubernetes configured"
+    }
+}
+
 def patch-app-tsx-holiday-tracker [instance_path: string] {
     let app_path = ($instance_path + "/packages/app/src/App.tsx")
     if not ($app_path | path exists) {
@@ -1073,6 +1174,7 @@ def patch-app-tsx-infrawallet [instance_path: string] {
 
 def patch-app-tsx [instance_path: string, plugin_name: string] {
     match $plugin_name {
+        "kubernetes"      => { patch-app-tsx-kubernetes      $instance_path }
         "holiday-tracker" => { patch-app-tsx-holiday-tracker $instance_path }
         "cost-insights"   => { patch-app-tsx-cost-insights   $instance_path }
         "infrawallet"     => { patch-app-tsx-infrawallet      $instance_path }
@@ -1144,6 +1246,24 @@ export def add-plugin [
         }
     }
 
+    # ── Scaffolder module (optional, e.g. publish:azure) ─────────────────────
+    let scaffolder_pkg = ($plugin | get --optional scaffolder_pkg)
+    if (not $frontend_only) and ($scaffolder_pkg != null) and (($scaffolder_pkg | str trim) != "") {
+        let backend_dir = ($instance_path + "/packages/backend")
+        if ($backend_dir | path exists) {
+            utils print-info $"Installing scaffolder module: ($scaffolder_pkg)"
+            let result = (do { cd $backend_dir; ^yarn add $scaffolder_pkg } | complete)
+            if $result.exit_code == 0 {
+                utils print-success $"Scaffolder module installed"
+            } else {
+                utils print-error $"Scaffolder module install failed — run manually:"
+                utils print-info  $"  yarn --cwd ($backend_dir) add ($scaffolder_pkg)"
+            }
+        } else {
+            utils print-warning $"packages/backend not found — skipping scaffolder module install"
+        }
+    }
+
     # ── app-config.yaml ──────────────────────────────────────────────────────
     if not $skip_config {
         let config_path = ($instance_path + "/app-config.yaml")
@@ -1190,6 +1310,11 @@ export def add-plugin [
     utils print-header "Patching Source Files"
     if not $frontend_only {
         patch-backend-plugin-index $instance_path $plugin
+        # Register scaffolder action module in index.ts (e.g. publish:azure)
+        let scaffolder_pkg2 = ($plugin | get --optional scaffolder_pkg)
+        if ($scaffolder_pkg2 != null) and (($scaffolder_pkg2 | str trim) != "") {
+            patch-scaffolder-module-index $instance_path $scaffolder_pkg2
+        }
     }
     if not $backend_only {
         patch-apis-ts $instance_path $plugin_name
@@ -1260,7 +1385,84 @@ export def list-available-plugins [] {
     } | ignore
 }
 
-# Show detailed info and install instructions for a plugin
+# List all CLI-registered plugins currently installed in a Backstage instance.
+# Returns a list of records: { id, name, frontend (bool), backend (bool) }
+# Scans packages/app/package.json and packages/backend/package.json for known plugin packages.
+export def list-installed-plugins [instance_path: string] {
+    let expanded   = ($instance_path | path expand)
+    let app_pkg    = ($expanded + "/packages/app/package.json")
+    let backend_pkg_file = ($expanded + "/packages/backend/package.json")
+    let registry   = (plugin-registry)
+
+    let app_deps = if ($app_pkg | path exists) {
+        let pkg = (open --raw $app_pkg | from json)
+        let deps         = ($pkg | get --optional dependencies | default {})
+        let dev_deps     = ($pkg | get --optional devDependencies | default {})
+        ($deps | columns) ++ ($dev_deps | columns)
+    } else { [] }
+
+    let backend_deps = if ($backend_pkg_file | path exists) {
+        let pkg = (open --raw $backend_pkg_file | from json)
+        let deps         = ($pkg | get --optional dependencies | default {})
+        let dev_deps     = ($pkg | get --optional devDependencies | default {})
+        ($deps | columns) ++ ($dev_deps | columns)
+    } else { [] }
+
+    let all_deps = ($app_deps ++ $backend_deps)
+
+    $registry | items {|id, plugin|
+        let has_frontend = ($plugin.frontend_pkg | is-not-empty) and ($plugin.frontend_pkg in $all_deps)
+        let has_backend  = ($plugin.backend_pkg  | is-not-empty) and ($plugin.backend_pkg  in $all_deps)
+        if $has_frontend or $has_backend {
+            {
+                id:       $id
+                name:     $plugin.name
+                frontend: $has_frontend
+                backend:  $has_backend
+            }
+        }
+    } | where {|x| $x != null}
+}
+
+# Print a formatted list of plugins installed in a Backstage instance.
+export def print-installed-plugins [instance_path: string] {
+    let expanded = ($instance_path | path expand)
+
+    if not ($expanded | path exists) {
+        utils print-error $"Instance path not found: ($expanded)"
+        exit 1
+    }
+
+    let registry  = (plugin-registry)
+    let colors    = (config get-colors)
+    let installed = (list-installed-plugins $instance_path)
+
+    utils print-header $"Installed Plugins — ($expanded)"
+    print ""
+
+    if ($installed | is-empty) {
+        utils print-info "No registered plugins installed"
+        return
+    }
+
+    for p in $installed {
+        let plugin = ($registry | get $p.id)
+        print $"  ($colors.cyan)($colors.bold)($p.id)($colors.reset)  ($p.name)"
+        print $"    ($plugin.description)"
+        if $p.frontend {
+            utils print-success $"  frontend  ($plugin.frontend_pkg)"
+        }
+        if $p.backend {
+            utils print-success $"  backend   ($plugin.backend_pkg)"
+        }
+        print ""
+    }
+
+    let count = ($installed | length)
+    let msg = ($count | into string) + " plugin(s) installed"
+    utils print-info $msg
+}
+
 export def show-plugin-info [plugin_name: string] {
     let registry = (plugin-registry)
 
@@ -1276,10 +1478,18 @@ export def show-plugin-info [plugin_name: string] {
     print ""
     print $"  Description: ($plugin.description)"
     if ($plugin.frontend_pkg | is-not-empty) {
-        print $"  Frontend package:  ($plugin.frontend_pkg)"
+        print $"  Frontend package:   ($plugin.frontend_pkg)"
     }
     if ($plugin.backend_pkg | is-not-empty) {
-        print $"  Backend package:   ($plugin.backend_pkg)"
+        print $"  Backend package:    ($plugin.backend_pkg)"
+    }
+    let spkg = ($plugin | get --optional scaffolder_pkg)
+    if ($spkg != null) and (($spkg | str trim) != "") {
+        print $"  Scaffolder module:  ($spkg)"
+        let sactions = ($plugin | get --optional scaffolder_actions)
+        if ($sactions != null) and (($sactions | str trim) != "") {
+            print $"  Scaffolder actions: ($sactions)"
+        }
     }
     print ""
     utils print-header "app-config.yaml snippet"
@@ -1287,3 +1497,5 @@ export def show-plugin-info [plugin_name: string] {
     utils print-header "Post-install Notes"
     print $plugin.notes
 }
+
+
