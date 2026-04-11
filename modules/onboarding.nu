@@ -717,16 +717,45 @@ export def onboard-project [
                 utils print-warning "Could not retrieve agent pools — grant permission manually"
                 utils print-warning "ADO → Organisation Settings → Agent Pools → <pool> → Security → Add group as User"
             } else {
+                # Query the valid role names for this scope to avoid hard-coding.
+                # Prefer "User" role; fall back to "Reader" if "User" is absent.
+                let roles_url = $"https://dev.azure.com/($org_name)/_apis/securityroles/scopes/distributedtask.agentpoolrole/roles?api-version=7.1-preview.1"
+                let available_roles = try {
+                    ^az rest --method GET --url $roles_url --resource $ADO_RESOURCE_ID --output json | from json | get value | get displayName
+                } catch { ["User"] }
+
+                let role_name = if ("User" in $available_roles) {
+                    "User"
+                } else if ("Reader" in $available_roles) {
+                    "Reader"
+                } else if (($available_roles | length) > 0) {
+                    $available_roles | first
+                } else {
+                    "User"
+                }
+
+                # Convert Graph subject descriptor → Identity storage key (GUID).
+                # The Security Roles API expects an identity storage key, not a Graph descriptor.
+                # Copy mut to let so it can be captured in the catch closure.
+                let resolved_descriptor = $pool_descriptor
+                let identity_url = $"https://vssps.dev.azure.com/($org_name)/_apis/identities?subjectDescriptors=($resolved_descriptor)&api-version=7.1-preview.1"
+                let identity_id = try {
+                    let ident = (^az rest --method GET --url $identity_url --resource $ADO_RESOURCE_ID --output json | from json | get value | first)
+                    $ident.id
+                } catch { $resolved_descriptor }
+
+                utils print-info $"Using role '($role_name)' for agent pool assignment"
+
                 mut granted = 0
                 for pool in $pools {
                     let role_url = $"https://dev.azure.com/($org_name)/_apis/securityroles/scopes/distributedtask.agentpoolrole/roleassignments/resources/($pool.id)?api-version=7.1-preview.1"
                     try {
-                        ^az rest --method PUT --url $role_url --resource $ADO_RESOURCE_ID --headers "Content-Type=application/json" --body $"[{\"roleName\": \"User\", \"userId\": \"($pool_descriptor)\"}]" --output none
+                        ^az rest --method PUT --url $role_url --resource $ADO_RESOURCE_ID --headers "Content-Type=application/json" --body $"[{\"roleName\": \"($role_name)\", \"userId\": \"($identity_id)\"}]" --output none
                         $granted = ($granted + 1)
                     } catch { }
                 }
                 if $granted > 0 {
-                    utils print-success $"Agent Pool User role granted on ($granted) org pool\(s\)"
+                    utils print-success $"Agent Pool ($role_name) role granted on ($granted) org pool\(s\)"
                 } else {
                     utils print-warning "Could not grant pool permissions automatically"
                     utils print-warning "ADO → Organisation Settings → Agent Pools → <pool> → Security → Add group as User"
