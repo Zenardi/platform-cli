@@ -581,38 +581,53 @@ export def onboard-project [
     if $dry_run {
         utils print-info $"Would add backstage \(($backstage_object_id)\) as member of ($group_name)"
     } else {
-        # Entra groups only accept Service Principal object IDs as members.
-        # The --backstage-object-id flag holds the App Registration object ID,
-        # which is a different object from the associated Service Principal.
-        # Resolve the SP object ID via the app's appId (client ID).
-        let backstage_sp_id = try {
-            let app_id = (^az ad app show --id $backstage_object_id --query appId --output tsv | str trim)
-            ^az ad sp show --id $app_id --query id --output tsv | str trim
-        } catch {
-            # If lookup fails, the caller may have already passed a SP object ID directly
-            $backstage_object_id
+        # Entra groups only accept Service Principal object IDs as members — not App Registration IDs.
+        # Resolution strategy:
+        #   1. Try direct SP lookup (handles case where caller already passed a SP object ID)
+        #   2. Try App Registration path: app show -> appId -> sp show
+        #   3. If both fail, warn and skip with manual instructions
+        mut backstage_sp_id = ""
+
+        # Path 1: maybe it's already a SP object ID
+        let direct_sp = try { ^az ad sp show --id $backstage_object_id --query id --output tsv | str trim } catch { "" }
+        if ($direct_sp | is-not-empty) {
+            utils print-info $"Resolved backstage SP object ID \(direct lookup\): ($direct_sp)"
+            $backstage_sp_id = $direct_sp
         }
 
-        if ($backstage_sp_id | is-empty) or ($backstage_sp_id == $backstage_object_id) {
-            utils print-warning $"Could not resolve SP object ID for backstage app \(($backstage_object_id)\) — using value as-is"
-        } else {
-            utils print-info $"Resolved backstage SP object ID: ($backstage_sp_id)"
-        }
-
-        let is_member = try {
-            ^az ad group member check --group $group_object_id --member-id $backstage_sp_id --output json | from json | get value
-        } catch { false }
-
-        if not $is_member {
-            try {
-                ^az ad group member add --group $group_object_id --member-id $backstage_sp_id
-                utils print-success "backstage added to admin group"
-            } catch {
-                utils print-error $"Failed to add backstage to admin group. Verify that ($backstage_object_id) is a valid App Registration or Service Principal Object ID."
-                exit 1
+        # Path 2: App Registration object ID → appId (client ID) → SP object ID
+        if ($backstage_sp_id | is-empty) {
+            let via_app = try {
+                let app_id = (^az ad app show --id $backstage_object_id --query appId --output tsv | str trim)
+                ^az ad sp show --id $app_id --query id --output tsv | str trim
+            } catch { "" }
+            if ($via_app | is-not-empty) {
+                utils print-info $"Resolved backstage SP object ID \(via app reg\): ($via_app)"
+                $backstage_sp_id = $via_app
             }
+        }
+
+        if ($backstage_sp_id | is-empty) {
+            utils print-warning $"Could not resolve a Service Principal for backstage object ID ($backstage_object_id)."
+            utils print-warning "Skipping automatic group membership — add backstage manually:"
+            utils print-warning "  az ad group member add --group <group-object-id> --member-id <backstage-sp-object-id>"
         } else {
-            utils print-info "backstage already in admin group"
+            let resolved_sp_id = $backstage_sp_id  # snapshot of mut — closures can't capture mut vars
+            let is_member = try {
+                ^az ad group member check --group $group_object_id --member-id $resolved_sp_id --output json | from json | get value
+            } catch { false }
+
+            if not $is_member {
+                try {
+                    ^az ad group member add --group $group_object_id --member-id $resolved_sp_id
+                    utils print-success "backstage added to admin group"
+                } catch {
+                    utils print-warning $"Could not add backstage to admin group \(SP: ($resolved_sp_id)\)."
+                    utils print-warning $"Add it manually: az ad group member add --group ($group_object_id) --member-id ($resolved_sp_id)"
+                }
+            } else {
+                utils print-info "backstage already in admin group"
+            }
         }
     }
 
