@@ -1,0 +1,528 @@
+# onboarding.nu — AKS GitOps Platform project onboarding automation
+#
+# Automates all Azure and ADO pre-requisite steps a developer must complete
+# before running the AKS GitOps Platform template in Backstage.
+#
+# Prerequisites (checked at runtime):
+#   - az CLI installed and logged in with a personal account (az login)
+#   - az devops extension  (az extension add --name azure-devops)
+#
+# The developer's own credentials are used — no service principal required.
+
+use ./utils.nu
+
+# ADO resource ID used for az rest authentication against dev.azure.com / vssps.dev.azure.com
+const ADO_RESOURCE_ID = "499b84ac-1321-427f-aa17-267ca6975798"
+
+# ── Pure functions (unit-testable, no I/O) ────────────────────────────────────
+
+# Validate that a project name is kebab-case.
+# Rules: lowercase letters and digits only; hyphens allowed between segments;
+# must start with a letter; no consecutive or trailing hyphens.
+# Returns true when valid, false otherwise.
+export def validate-project-name [name: string]: nothing -> bool {
+    ($name | str length) > 0 and ($name =~ '^[a-z][a-z0-9]*(-[a-z0-9]+)*$')
+}
+
+# Build the JSON body for an ADO Workload Identity Federation service endpoint.
+# Used in both Phase 1 (create) and Phase 3 (verify) of the sc-bootstrap setup.
+export def build-wif-endpoint-body [
+    sc_name: string       # Service connection name (e.g. "sc-bootstrap")
+    sp_app_id: string     # SP App (client) ID
+    sub_id: string        # Azure subscription ID
+    sub_name: string      # Azure subscription display name
+    tenant_id: string     # Entra ID tenant ID
+    project_id: string    # ADO project ID (UUID)
+    project_name: string  # ADO project name
+]: nothing -> string {
+    {
+        name: $sc_name
+        type: "AzureRM"
+        url: "https://management.azure.com/"
+        authorization: {
+            scheme: "WorkloadIdentityFederation"
+            parameters: {
+                serviceprincipalid: $sp_app_id
+                tenantid: $tenant_id
+            }
+        }
+        data: {
+            subscriptionId: $sub_id
+            subscriptionName: $sub_name
+            environment: "AzureCloud"
+            creationMode: "Manual"
+        }
+        serviceEndpointProjectReferences: [
+            {
+                description: ""
+                name: $sc_name
+                projectReference: {
+                    id: $project_id
+                    name: $project_name
+                }
+            }
+        ]
+    } | to json --raw
+}
+
+# Build the JSON body for an Entra ID federated credential.
+# Used in Phase 2 of the sc-bootstrap setup to link ADO WIF to the SP.
+export def build-federated-credential-body [
+    issuer: string   # WIF issuer URL returned by ADO after Phase 1
+    subject: string  # WIF subject returned by ADO after Phase 1
+]: nothing -> string {
+    {
+        name: "ado-sc-bootstrap"
+        issuer: $issuer
+        subject: $subject
+        audiences: ["api://AzureADTokenExchange"]
+    } | to json --raw
+}
+
+# Format the final summary block printed after all steps complete.
+# Returns a multi-line string ready to print to the terminal.
+export def format-onboarding-summary [
+    project_name: string    # ADO project / kebab-case project name
+    group_object_id: string # Entra admin group Object ID
+    sub_id: string          # Azure subscription ID
+    tenant_id: string       # Entra tenant ID
+]: nothing -> string {
+    [
+        ""
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        "  Onboarding Complete — Backstage Form Values"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        $"  ADO Project Name        : ($project_name)"
+        $"  Admin Group Object ID   : ($group_object_id)"
+        "  Service Connection Name : sc-bootstrap"
+        $"  Subscription ID         : ($sub_id)"
+        $"  Tenant ID               : ($tenant_id)"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        ""
+        "⚠  Manual step required — create an ADO Personal Access Token:"
+        "   Go to ADO → User Settings → Personal Access Tokens → New Token"
+        "   Required scopes:"
+        "     • Code: Read"
+        "     • Agent Pools: Read & Manage"
+        "     • Service Connections: Read, query & manage"
+        "     • Variable Groups: Read, create & manage"
+        "   Enter this token as 'ArgoCD ADO PAT' in the Backstage form."
+        ""
+    ] | str join "\n"
+}
+
+# ── Orchestration (calls Azure / ADO CLIs — not unit-testable) ────────────────
+
+# Onboard a new project: automate all Azure and ADO pre-requisites required
+# before running the AKS GitOps Platform template in Backstage.
+#
+# The developer's own az CLI credentials are used throughout. Ensure you are
+# logged in with 'az login' using a personal account that has:
+#   - Azure subscription Owner/Contributor rights
+#   - ADO Organization Administrator access
+#
+# Steps automated:
+#   1. Create ADO project (idempotent — skips if already exists)
+#   2. Create Entra group [project-name]-admins
+#   3. Create SP sp-[project-name]-platform
+#   4. Add SP as member + owner of the admin group
+#   5. Assign admin group as Subscription Owner
+#   6. Add the backstage identity to the admin group
+#   7. Add admin group as ADO Project Administrator (Graph API)
+#   8. Grant org-level Agent Pool permission to admin group
+#   9. Create sc-bootstrap WIF service connection (3-phase: create → fedcred → verify)
+#
+# Step not automated (PAT): printed as a clear manual reminder at the end.
+export def onboard-project [
+    --project-name: string              # Kebab-case project name (e.g. myproject or my-project)
+    --subscription-id: string           # Azure subscription UUID
+    --tenant-id: string                 # Entra ID tenant UUID
+    --ado-org: string                   # ADO org URL (e.g. https://dev.azure.com/myorg)
+    --backstage-object-id: string       # Object ID of the 'backstage' App Registration
+    --subscription-name: string = ""    # Subscription display name (auto-detected when empty)
+    --dry-run = false                   # Preview all steps without making any changes
+] {
+    utils require-command "az" "Azure CLI (https://docs.microsoft.com/cli/azure/install-azure-cli)"
+
+    if $dry_run {
+        utils print-warning "DRY-RUN mode — no changes will be made"
+    }
+
+    # ── Validate inputs ────────────────────────────────────────────────────────
+    utils print-header "Input Validation"
+
+    if ($project_name | is-empty) {
+        utils print-error "--project-name is required"
+        exit 1
+    }
+    if not (validate-project-name $project_name) {
+        utils print-error $"Invalid project name '($project_name)'. Use lowercase letters, digits, and hyphens (e.g. myproject or my-project)"
+        exit 1
+    }
+    for param in [
+        ["--subscription-id" $subscription_id]
+        ["--tenant-id"       $tenant_id]
+        ["--ado-org"         $ado_org]
+        ["--backstage-object-id" $backstage_object_id]
+    ] {
+        if ($param.1 | is-empty) {
+            utils print-error $"($param.0) is required"
+            exit 1
+        }
+    }
+
+    let group_name = $"($project_name)-admins"
+    let sp_name    = $"sp-($project_name)-platform"
+    let org_name   = ($ado_org | str replace "https://dev.azure.com/" "" | str trim --char "/")
+
+    utils print-info $"Project       : ($project_name)"
+    utils print-info $"Admin group   : ($group_name)"
+    utils print-info $"SP name       : ($sp_name)"
+    utils print-info $"ADO org       : ($org_name)"
+    utils print-success "Inputs valid"
+
+    # ── Ensure az devops extension is installed ────────────────────────────────
+    let devops_installed = try {
+        ^az extension show --name azure-devops --output json 2>/dev/null | from json | get -o name | default "" | is-not-empty
+    } catch { false }
+
+    if not $devops_installed {
+        if $dry_run {
+            utils print-warning "az devops extension not found — would install it"
+        } else {
+            utils print-info "Installing az devops extension..."
+            ^az extension add --name azure-devops
+            utils print-success "az devops extension ready"
+        }
+    }
+
+    # ── Resolve subscription name ──────────────────────────────────────────────
+    let resolved_sub_name = if ($subscription_name | is-not-empty) {
+        $subscription_name
+    } else if $dry_run {
+        "dry-run-subscription-name"
+    } else {
+        try {
+            ^az account show --subscription $subscription_id --output json | from json | get name
+        } catch {
+            utils print-error $"Cannot resolve subscription name for ($subscription_id). Pass --subscription-name to skip auto-detection."
+            exit 1
+        }
+    }
+    utils print-info $"Subscription  : ($resolved_sub_name)"
+
+    # ── Step 1: Create ADO project ─────────────────────────────────────────────
+    utils print-header $"Step 1 — ADO Project: ($project_name)"
+
+    let existing_project = try {
+        ^az devops project show --project $project_name --org $ado_org --output json 2>/dev/null | from json
+    } catch { null }
+
+    let project_id = if ($existing_project != null) {
+        utils print-info $"Project '($project_name)' already exists — skipping creation"
+        $existing_project.id
+    } else if $dry_run {
+        utils print-info $"Would create ADO project: ($project_name)"
+        "dry-run-project-id"
+    } else {
+        let created = try {
+            ^az devops project create --name $project_name --org $ado_org --output json | from json
+        } catch {
+            utils print-error $"Failed to create ADO project '($project_name)'"
+            exit 1
+        }
+        utils print-success $"ADO project '($project_name)' created"
+        $created.id
+    }
+
+    # ── Step 2: Create Entra admin group ───────────────────────────────────────
+    utils print-header $"Step 2 — Entra Group: ($group_name)"
+
+    let existing_group = try {
+        ^az ad group show --group $group_name --output json 2>/dev/null | from json
+    } catch { null }
+
+    let group_object_id = if ($existing_group != null) {
+        utils print-info $"Group '($group_name)' already exists — skipping creation"
+        $existing_group.id
+    } else if $dry_run {
+        utils print-info $"Would create Entra group: ($group_name)"
+        "dry-run-group-id"
+    } else {
+        let created = try {
+            ^az ad group create --display-name $group_name --mail-nickname $group_name --output json | from json
+        } catch {
+            utils print-error $"Failed to create group '($group_name)'"
+            exit 1
+        }
+        utils print-success $"Group '($group_name)' created (Object ID: ($created.id))"
+        $created.id
+    }
+
+    # ── Step 3: Create Service Principal ──────────────────────────────────────
+    utils print-header $"Step 3 — Service Principal: ($sp_name)"
+
+    let existing_sp_list = try {
+        ^az ad sp list --display-name $sp_name --output json 2>/dev/null | from json
+    } catch { [] }
+    let existing_sp = ($existing_sp_list | get 0?)
+
+    let sp_app_id = if ($existing_sp != null) {
+        utils print-info $"SP '($sp_name)' already exists — skipping creation"
+        $existing_sp.appId
+    } else if $dry_run {
+        utils print-info $"Would create SP: ($sp_name)"
+        "dry-run-sp-app-id"
+    } else {
+        let created = try {
+            ^az ad sp create-for-rbac --name $sp_name --skip-assignment --output json | from json
+        } catch {
+            utils print-error $"Failed to create SP '($sp_name)'"
+            exit 1
+        }
+        utils print-success $"SP '($sp_name)' created (appId: ($created.appId))"
+        $created.appId
+    }
+
+    # SP object ID (used for group membership — differs from appId)
+    let sp_object_id = if $dry_run {
+        "dry-run-sp-object-id"
+    } else {
+        try {
+            ^az ad sp show --id $sp_app_id --output json | from json | get id
+        } catch {
+            utils print-error "Failed to resolve SP object ID"
+            exit 1
+        }
+    }
+
+    # ── Step 4: Add SP as group member + owner ─────────────────────────────────
+    utils print-header "Step 4 — SP Membership in Admin Group"
+
+    if $dry_run {
+        utils print-info $"Would add ($sp_name) as member of ($group_name)"
+        utils print-info $"Would add ($sp_name) as owner of ($group_name)"
+    } else {
+        let is_member = try {
+            ^az ad group member check --group $group_name --member-id $sp_object_id --output json | from json | get value
+        } catch { false }
+
+        if not $is_member {
+            ^az ad group member add --group $group_name --member-id $sp_object_id
+            utils print-success $"($sp_name) added as member"
+        } else {
+            utils print-info $"($sp_name) already a member"
+        }
+
+        try {
+            ^az ad group owner add --group $group_name --owner-object-id $sp_object_id
+            utils print-success $"($sp_name) added as owner"
+        } catch {
+            utils print-info $"($sp_name) may already be an owner"
+        }
+    }
+
+    # ── Step 5: Assign admin group as Subscription Owner ──────────────────────
+    utils print-header "Step 5 — Subscription Owner Role"
+    let sub_scope = $"/subscriptions/($subscription_id)"
+
+    if $dry_run {
+        utils print-info $"Would assign ($group_name) as Owner on ($sub_scope)"
+    } else {
+        let existing_assignments = try {
+            ^az role assignment list --assignee $group_object_id --role Owner --scope $sub_scope --output json | from json | length
+        } catch { 0 }
+
+        if $existing_assignments > 0 {
+            utils print-info $"($group_name) already has Owner on subscription — skipping"
+        } else {
+            try {
+                ^az role assignment create --assignee $group_object_id --role Owner --scope $sub_scope --output none
+                utils print-success $"($group_name) assigned as Subscription Owner"
+            } catch {
+                utils print-error "Failed to assign Subscription Owner role"
+                exit 1
+            }
+        }
+    }
+
+    # ── Step 6: Add backstage to admin group ───────────────────────────────────
+    utils print-header "Step 6 — backstage in Admin Group"
+
+    if $dry_run {
+        utils print-info $"Would add backstage (($backstage_object_id)) as member of ($group_name)"
+    } else {
+        let is_member = try {
+            ^az ad group member check --group $group_name --member-id $backstage_object_id --output json | from json | get value
+        } catch { false }
+
+        if not $is_member {
+            ^az ad group member add --group $group_name --member-id $backstage_object_id
+            utils print-success "backstage added to admin group"
+        } else {
+            utils print-info "backstage already in admin group"
+        }
+    }
+
+    # ── Step 7: Add group as ADO Project Administrator (Graph API) ────────────
+    utils print-header "Step 7 — ADO Project Administrator"
+
+    if $dry_run {
+        utils print-info $"Would add ($group_name) as ADO Project Administrator in ($project_name)"
+    } else {
+        # Get the ADO graph descriptor for the project (needed to scope group lookup)
+        let desc_url = ($"https://vssps.dev.azure.com/($org_name)/_apis/graph/descriptors/($project_id)" + "?api-version=7.1-preview.1")
+        let project_descriptor = try {
+            ^az rest --method GET --url $desc_url --resource $ADO_RESOURCE_ID --output json | from json | get value
+        } catch { "" }
+
+        if ($project_descriptor | is-empty) {
+            utils print-warning "Could not resolve ADO project descriptor — skipping Step 7"
+            utils print-warning "Add manually: ADO → Project Settings → Permissions → Project Administrators → Members → Add group"
+        } else {
+            # Find Project Administrators group in this project scope
+            let groups_url = ($"https://vssps.dev.azure.com/($org_name)/_apis/graph/groups" + $"?scopeDescriptor=($project_descriptor)" + "&api-version=7.1-preview.1")
+            let groups_response = try {
+                ^az rest --method GET --url $groups_url --resource $ADO_RESOURCE_ID --output json | from json
+            } catch { {value: []} }
+
+            let proj_admin_group = (
+                $groups_response.value
+                | where { |g| ($g.principalName | default "" | str ends-with "\\Project Administrators") }
+                | get 0?
+            )
+
+            if ($proj_admin_group == null) {
+                utils print-warning "Could not find Project Administrators group — add group manually in ADO"
+            } else {
+                # Materialize the Entra group in ADO to get its descriptor,
+                # and simultaneously add it as a member of Project Administrators.
+                let materialize_url = ($"https://vssps.dev.azure.com/($org_name)/_apis/graph/groups" + $"?groupDescriptors=($proj_admin_group.descriptor)" + "&api-version=7.1-preview.1")
+                let entra_group_in_ado = try {
+                    ^az rest --method POST --url $materialize_url --resource $ADO_RESOURCE_ID --headers "Content-Type=application/json" --body $"{\"originId\": \"($group_object_id)\"}" --output json | from json
+                } catch { null }
+
+                if ($entra_group_in_ado == null) {
+                    utils print-warning "Could not materialize Entra group in ADO"
+                    utils print-warning "Add manually: ADO → Project Settings → Permissions → Project Administrators → Members"
+                } else {
+                    let member_descriptor = $entra_group_in_ado.descriptor
+                    # Add membership explicitly (materialization may or may not add it)
+                    let membership_url = ($"https://vssps.dev.azure.com/($org_name)/_apis/graph/memberships/($member_descriptor)/($proj_admin_group.descriptor)" + "?api-version=7.1-preview.1")
+                    try {
+                        ^az rest --method PUT --url $membership_url --resource $ADO_RESOURCE_ID --output none
+                        utils print-success $"($group_name) added as ADO Project Administrator"
+                    } catch {
+                        utils print-info $"($group_name) may already be a Project Administrator"
+                    }
+                }
+            }
+        }
+    }
+
+    # ── Step 8: Org-level Agent Pool permission ────────────────────────────────
+    utils print-header "Step 8 — Org-Level Agent Pool Permission"
+
+    if $dry_run {
+        utils print-info $"Would grant ($group_name) Agent Pool Administrator permission at org level"
+    } else {
+        let pools_url = ($"https://dev.azure.com/($org_name)/_apis/distributedtask/pools" + "?api-version=7.1")
+        let pools = try {
+            ^az rest --method GET --url $pools_url --resource $ADO_RESOURCE_ID --output json | from json | get value
+        } catch { [] }
+
+        if ($pools | is-empty) {
+            utils print-warning "Could not retrieve agent pools — grant permission manually"
+            utils print-warning "ADO → Organization Settings → Agent Pools → Security → Add group as Administrator"
+        } else {
+            mut granted = 0
+            for pool in $pools {
+                let pool_users_url = ($"https://dev.azure.com/($org_name)/_apis/distributedtask/pools/($pool.id)/users" + "?api-version=7.1-preview.1")
+                try {
+                    ^az rest --method PATCH --url $pool_users_url --resource $ADO_RESOURCE_ID --headers "Content-Type=application/json" --body $"{\"subjectDescriptor\": \"($group_object_id)\", \"roleName\": \"Administrator\"}" --output none
+                    $granted = ($granted + 1)
+                } catch { }
+            }
+            if $granted > 0 {
+                utils print-success $"Agent Pool Administrator granted on ($granted) pool(s)"
+            } else {
+                utils print-warning "Could not grant pool permissions automatically"
+                utils print-warning "ADO → Organization Settings → Agent Pools → Security → Add group as Administrator"
+            }
+        }
+    }
+
+    # ── Step 9: Create sc-bootstrap WIF service connection (3-phase) ──────────
+    utils print-header "Step 9 — WIF Service Connection (sc-bootstrap)"
+
+    if $dry_run {
+        utils print-info "Would create WIF service connection sc-bootstrap:"
+        utils print-info "  Phase 1 — POST /serviceendpoint/endpoints"
+        utils print-info "  Phase 2 — az ad app federated-credential create"
+        utils print-info "  Phase 3 — PUT /serviceendpoint/endpoints/{id} (verify)"
+    } else {
+        # Check if service connection already exists
+        let existing_sc_list = try {
+            ^az devops service-endpoint list --project $project_name --org $ado_org --output json | from json
+        } catch { [] }
+        let existing_sc = ($existing_sc_list | where { |e| ($e | get -o name | default "") == "sc-bootstrap" } | get 0?)
+
+        if ($existing_sc != null) {
+            utils print-info "Service connection sc-bootstrap already exists — skipping"
+        } else {
+            # Phase 1: Create endpoint
+            let endpoint_body = (build-wif-endpoint-body "sc-bootstrap" $sp_app_id $subscription_id $resolved_sub_name $tenant_id $project_id $project_name)
+            let endpoints_url = ($"https://dev.azure.com/($org_name)/($project_name)/_apis/serviceendpoint/endpoints" + "?api-version=7.1")
+
+            let endpoint = try {
+                ^az rest --method POST --url $endpoints_url --resource $ADO_RESOURCE_ID --headers "Content-Type=application/json" --body $endpoint_body --output json | from json
+            } catch {
+                utils print-error "Failed to create service endpoint (Phase 1)"
+                exit 1
+            }
+
+            let endpoint_id = $endpoint.id
+            let issuer      = ($endpoint | get -o authorization.parameters.workloadIdentityFederationIssuer | default "")
+            let subject     = ($endpoint | get -o authorization.parameters.workloadIdentityFederationSubject | default "")
+
+            if ($issuer | is-empty) or ($subject | is-empty) {
+                utils print-error "ADO did not return WIF issuer/subject — cannot create federated credential"
+                exit 1
+            }
+
+            utils print-success $"Phase 1 done (endpoint id: ($endpoint_id))"
+            utils print-info $"Issuer:  ($issuer)"
+            utils print-info $"Subject: ($subject)"
+
+            # Phase 2: Create federated credential in Entra on the SP's Application registration
+            let app_object_id = try {
+                ^az ad app show --id $sp_app_id --output json | from json | get id
+            } catch {
+                utils print-error "Failed to get Application object ID for federated credential"
+                exit 1
+            }
+
+            let fed_cred_body = (build-federated-credential-body $issuer $subject)
+            try {
+                ^az ad app federated-credential create --id $app_object_id --parameters $fed_cred_body --output none
+                utils print-success "Phase 2 done (federated credential created)"
+            } catch {
+                utils print-error "Failed to create federated credential (Phase 2)"
+                exit 1
+            }
+
+            # Phase 3: Verify the endpoint
+            let verify_body = ($endpoint | upsert isReady true | to json --raw)
+            let verify_url = ($"https://dev.azure.com/($org_name)/($project_name)/_apis/serviceendpoint/endpoints/($endpoint_id)" + "?api-version=7.1")
+            try {
+                ^az rest --method PUT --url $verify_url --resource $ADO_RESOURCE_ID --headers "Content-Type=application/json" --body $verify_body --output none
+                utils print-success "Phase 3 done (sc-bootstrap verified and ready)"
+            } catch {
+                utils print-warning "Endpoint verify call failed — sc-bootstrap may still work, check in ADO"
+            }
+        }
+    }
+
+    # ── Final summary ──────────────────────────────────────────────────────────
+    print (format-onboarding-summary $project_name $group_object_id $subscription_id $tenant_id)
+}

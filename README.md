@@ -40,6 +40,7 @@ Automates scaffolding, plugin installation, auth provider setup, catalog entity 
     - [`platform cluster configure`](#platform-cluster-configure)
     - [`platform cluster list`](#platform-cluster-list)
     - [`platform deploy`](#platform-deploy)
+    - [`platform project onboard`](#platform-project-onboard)
   - [Catalog Entity Format](#catalog-entity-format)
   - [Project Structure](#project-structure)
   - [See Also](#see-also)
@@ -778,6 +779,59 @@ platform deploy <instance-path> [options]
 ```nushell
 platform deploy ./my-backstage
 platform deploy ./my-backstage --environment staging
+```
+
+---
+
+### `platform project onboard`
+
+Automates all Azure and ADO pre-requisite steps a developer must complete before running the **AKS GitOps Platform** template in Backstage. All steps are idempotent — safe to re-run.
+
+**Prerequisites:**
+- `az` CLI installed and logged in with a personal account (`az login`)
+- `az devops` extension (auto-installed if missing)
+- ADO Personal Access Token with organization-level access (to create the ADO project)
+
+**Steps automated:**
+
+| Step | Description |
+|---|---|
+| 1 | Create ADO project |
+| 2 | Create Entra group `[project-name]-admins` |
+| 3 | Create service principal `sp-[project-name]-platform` |
+| 4 | Add SP as member + owner of admin group |
+| 5 | Assign admin group as Subscription Owner |
+| 6 | Add `backstage` App Registration to admin group |
+| 7 | Add admin group as ADO Project Administrator |
+| 8 | Grant org-level Agent Pool Administrator permission |
+| 9 | Create WIF `sc-bootstrap` service connection (3-phase: create → federated credential → verify) |
+
+After all steps succeed, prints all Backstage form values. ADO PAT must still be created manually.
+
+```
+platform project onboard [flags]
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--project-name <name>` | ✅ | Kebab-case project name, e.g. `myproject` |
+| `--subscription-id <uuid>` | ✅ | Azure subscription UUID |
+| `--tenant-id <uuid>` | ✅ | Entra ID tenant UUID |
+| `--ado-org <url>` | ✅ | ADO org URL, e.g. `https://dev.azure.com/myorg` |
+| `--backstage-object-id <uuid>` | ✅ | Object ID of the `backstage` App Registration |
+| `--subscription-name <name>` | ❌ | Subscription display name (auto-detected if omitted) |
+| `--dry-run` | ❌ | Preview all steps without making any changes |
+
+```nushell
+platform project onboard \
+  --project-name myproject \
+  --subscription-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx \
+  --tenant-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx \
+  --ado-org https://dev.azure.com/myorg \
+  --backstage-object-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+
+# Preview without making changes
+platform project onboard --project-name myproject ... --dry-run
 ```
 
 ---

@@ -13,6 +13,7 @@ use modules/dockerfile.nu *
 use modules/kubernetes.nu *
 use modules/actions.nu *
 use modules/cluster.nu *
+use modules/onboarding.nu *
 use config.nu
 
 def print-banner [] {
@@ -53,6 +54,7 @@ def print-help [] {
   dockerfile           Generate a production Dockerfile and .dockerignore
   k8s                  Generate Kubernetes manifests (Deployment, Service, Ingress, Secrets)
   cluster              Manage Kubernetes cluster config in app-config.local.yaml
+  project              Manage Azure project onboarding pre-requisites
   deploy               Prepare for production deployment
   help                 Show this help message
 
@@ -80,6 +82,8 @@ Examples:
   platform cluster configure ./my-backstage --cluster-name prod-cluster --kubeconfig ~/.kube/prod.yaml --sa-name backstage-reader
   platform cluster configure ./my-backstage --cluster-name kind-backstage --duration 2160h
   platform cluster list ./my-backstage
+  platform project onboard --project-name myproject --subscription-id <uuid> --tenant-id <uuid> --ado-org https://dev.azure.com/myorg --backstage-object-id <uuid>
+  platform project onboard --project-name myproject --subscription-id <uuid> --tenant-id <uuid> --ado-org https://dev.azure.com/myorg --backstage-object-id <uuid> --dry-run
   
 See 'platform auth info <provider>' or 'platform plugin info <name>' for detailed setup guides.
 "
@@ -919,6 +923,41 @@ def --wrapped main [...rest] {
                 _ => {
                     utils print-error $"Unknown action subcommand: ($rest.1)"
                     utils print-info "Available: add, list, info"
+                    exit 1
+                }
+            }
+        },
+        "project" => {
+            if ($rest | length) < 2 or $rest.1 == "--help" or $rest.1 == "-h" {
+                print-subcommand-help {
+                    usage: "platform project <subcommand> [args]"
+                    description: "Manage Azure project onboarding pre-requisites.\nSubcommands: onboard"
+                    examples: "  platform project onboard --project-name myproject --subscription-id <uuid> --tenant-id <uuid> --ado-org https://dev.azure.com/myorg --backstage-object-id <uuid>"
+                }
+                return
+            }
+            match $rest.1 {
+                "onboard" => {
+                    if ("--help" in $rest) or ("-h" in $rest) {
+                        print-subcommand-help {
+                            usage: "platform project onboard [flags]"
+                            description: "Automate all Azure and ADO pre-requisites before running the AKS GitOps Platform template.\n\nRequires az CLI logged in with a personal account (az login) and az devops extension.\n\nSteps automated (all idempotent):\n  1. Create ADO project\n  2. Create Entra group [project-name]-admins\n  3. Create SP sp-[project-name]-platform\n  4. Add SP as member + owner of admin group\n  5. Assign admin group as Subscription Owner\n  6. Add backstage identity to admin group\n  7. Add admin group as ADO Project Administrator\n  8. Grant org-level Agent Pool permission\n  9. Create sc-bootstrap WIF service connection (3-phase)\n\nPrints all Backstage form values at the end. ADO PAT must be created manually."
+                            options: "  --project-name <name>          Kebab-case project name, e.g. myproject (required)\n  --subscription-id <uuid>       Azure subscription UUID (required)\n  --tenant-id <uuid>             Entra ID tenant UUID (required)\n  --ado-org <url>                ADO org URL, e.g. https://dev.azure.com/myorg (required)\n  --backstage-object-id <uuid>   Object ID of the backstage App Registration (required)\n  --subscription-name <name>     Subscription display name (auto-detected when omitted)\n  --dry-run                      Preview all steps without making changes"
+                            examples: "  platform project onboard --project-name myproject --subscription-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx --tenant-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx --ado-org https://dev.azure.com/myorg --backstage-object-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx\n  platform project onboard --project-name my-project --subscription-id <uuid> --tenant-id <uuid> --ado-org https://dev.azure.com/myorg --backstage-object-id <uuid> --dry-run"
+                        }
+                        return
+                    }
+                    let project_name        = (get-flag $rest "--project-name"        | default "")
+                    let subscription_id     = (get-flag $rest "--subscription-id"     | default "")
+                    let tenant_id           = (get-flag $rest "--tenant-id"           | default "")
+                    let ado_org             = (get-flag $rest "--ado-org"             | default "")
+                    let backstage_object_id = (get-flag $rest "--backstage-object-id" | default "")
+                    let subscription_name   = (get-flag $rest "--subscription-name"   | default "")
+                    let dry_run             = ("--dry-run" in $rest)
+                    onboard-project --project-name $project_name --subscription-id $subscription_id --tenant-id $tenant_id --ado-org $ado_org --backstage-object-id $backstage_object_id --subscription-name $subscription_name --dry-run=$dry_run
+                },
+                _ => {
+                    utils print-error $"Unknown project subcommand: ($rest.1). Available: onboard"
                     exit 1
                 }
             }
