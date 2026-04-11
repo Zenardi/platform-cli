@@ -221,16 +221,42 @@ def ensure-az-devops-installed [] {
     utils print-success "azure-devops extension installed."
 }
 
-# Ensure the developer is logged in to Azure CLI.
-# If not logged in: print guidance and trigger az login interactively.
+# Ensure the developer is logged in to Azure CLI with a personal \(interactive\) account.
+# If not logged in, or logged in as a service principal, prompt for interactive login.
 def ensure-az-logged-in [] {
-    let logged_in = try {
-        ^az account show --output json | from json | get -o id | default "" | is-not-empty
-    } catch { false }
+    let account = try {
+        ^az account show --output json | from json
+    } catch { null }
 
-    if $logged_in { return }
+    # Not logged in at all
+    if ($account == null) {
+        utils print-warning "You are not logged in to Azure CLI."
+        do-interactive-az-login
+        return
+    }
 
-    utils print-warning "You are not logged in to Azure CLI."
+    # Detect SP / managed identity sessions — user.type is "servicePrincipal" or "ManagedIdentity"
+    let user_type = ($account | get -o user.type | default "user")
+    let user_name = ($account | get -o user.name | default "unknown")
+
+    if ($user_type != "user") {
+        utils print-warning $"Azure CLI is currently logged in as a service principal / managed identity: ($user_name)"
+        utils print-warning "platform project onboard requires your personal Azure account."
+        print ""
+        let answer = (utils prompt-confirm "Re-login with your personal account now?")
+        if not $answer {
+            utils print-info "Please run 'az login' manually with your personal account, then re-run this command."
+            exit 1
+        }
+        do-interactive-az-login
+        return
+    }
+
+    utils print-success $"Logged in as: ($user_name)"
+}
+
+# Run az login interactively and verify success.
+def do-interactive-az-login [] {
     utils print-info "Running 'az login' to authenticate..."
     print ""
     try {
@@ -240,13 +266,14 @@ def ensure-az-logged-in [] {
         exit 1
     }
 
-    # Verify again after login
     let ok = try {
-        ^az account show --output json | from json | get -o id | default "" | is-not-empty
+        let acc = (^az account show --output json | from json)
+        let t = ($acc | get -o user.type | default "user")
+        ($t == "user")
     } catch { false }
 
     if not $ok {
-        utils print-error "Login did not complete successfully. Please try 'az login' manually."
+        utils print-error "Login did not complete with a personal account. Please run 'az login' manually."
         exit 1
     }
     utils print-success "Logged in to Azure CLI."
