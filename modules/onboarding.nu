@@ -717,22 +717,7 @@ export def onboard-project [
                 utils print-warning "Could not retrieve agent pools — grant permission manually"
                 utils print-warning "ADO → Organisation Settings → Agent Pools → <pool> → Security → Add group as User"
             } else {
-                # Query the valid role names for this scope to avoid hard-coding.
-                # Prefer "User" role; fall back to "Reader" if "User" is absent.
-                let roles_url = $"https://dev.azure.com/($org_name)/_apis/securityroles/scopes/distributedtask.agentpoolrole/roles?api-version=7.1-preview.1"
-                let available_roles = try {
-                    ^az rest --method GET --url $roles_url --resource $ADO_RESOURCE_ID --output json | from json | get value | get displayName
-                } catch { ["User"] }
-
-                let role_name = if ("User" in $available_roles) {
-                    "User"
-                } else if ("Reader" in $available_roles) {
-                    "Reader"
-                } else if (($available_roles | length) > 0) {
-                    $available_roles | first
-                } else {
-                    "User"
-                }
+                let role_name = "User"
 
                 # Convert Graph subject descriptor → Identity storage key (GUID).
                 # The Security Roles API expects an identity storage key, not a Graph descriptor.
