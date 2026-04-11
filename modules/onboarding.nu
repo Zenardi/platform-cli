@@ -51,7 +51,10 @@ export def format-az-install-instructions [os: string]: nothing -> string {
 # must start with a letter; no consecutive or trailing hyphens.
 # Returns true when valid, false otherwise.
 export def validate-project-name [name: string]: nothing -> bool {
-    ($name | str length) > 0 and ($name =~ '^[a-z][a-z0-9]*(-[a-z0-9]+)*$')
+    # ADO project names: letters, digits, spaces, hyphens, periods, underscores.
+    # Must not be empty, start/end with a period, or contain reserved chars.
+    let trimmed = ($name | str trim)
+    (($trimmed | str length) > 0) and (not ($trimmed | str starts-with ".")) and (not ($trimmed | str ends-with ".")) and (not ($trimmed =~ '[\\/:*?"<>|]'))
 }
 
 # Build the JSON body for an ADO Workload Identity Federation service endpoint.
@@ -311,12 +314,13 @@ def ensure-correct-subscription [subscription_id: string] {
 #
 # Step not automated (PAT): printed as a clear manual reminder at the end.
 export def onboard-project [
-    --project-name: string              # Kebab-case project name (e.g. myproject or my-project)
+    --project-name: string              # ADO project name (letters, digits, spaces, hyphens allowed)
     --subscription-id: string           # Azure subscription UUID
     --tenant-id: string                 # Entra ID tenant UUID
     --ado-org: string                   # ADO org URL (e.g. https://dev.azure.com/myorg)
     --backstage-object-id: string       # Object ID of the 'backstage' App Registration
     --subscription-name: string = ""    # Subscription display name (auto-detected when empty)
+    --group-object-id: string = ""      # Object ID of an existing Entra admin group (skips group creation)
     --dry-run = false                   # Preview all steps without making any changes
 ] {
     # ── Pre-flight: ensure required tools are installed and credentials valid ──
@@ -338,7 +342,7 @@ export def onboard-project [
         exit 1
     }
     if not (validate-project-name $project_name) {
-        utils print-error $"Invalid project name '($project_name)'. Use lowercase letters, digits, and hyphens \(e.g. myproject or my-project\)"
+        utils print-error $"Invalid project name '($project_name)'. Must not be empty, start/end with a period, or contain \\ / : * ? \" < > |"
         exit 1
     }
     for param in [
@@ -353,8 +357,8 @@ export def onboard-project [
         }
     }
 
-    let group_name = $"($project_name)-admins"
-    let sp_name    = $"sp-($project_name)-platform"
+    let group_name = $"($project_name | str downcase | str replace --all ' ' '-')-admins"
+    let sp_name    = $"sp-($project_name | str downcase | str replace --all ' ' '-')-platform"
     let org_name   = ($ado_org | str replace "https://dev.azure.com/" "" | str trim --char "/")
 
     utils print-info $"Project       : ($project_name)"
@@ -405,13 +409,17 @@ export def onboard-project [
     # ── Step 2: Create Entra admin group ───────────────────────────────────────
     utils print-header $"Step 2 — Entra Group: ($group_name)"
 
-    let existing_group = try {
-        ^az ad group show --group $group_name --output json | from json
-    } catch { null }
+    # Only look up the group if the caller didn't supply the object ID directly.
+    let existing_group_lookup = if ($group_object_id | is-empty) {
+        try { ^az ad group show --group $group_name --output json | from json } catch { null }
+    } else { null }
 
-    let group_object_id = if ($existing_group != null) {
+    let group_object_id = if ($group_object_id | is-not-empty) {
+        utils print-info $"--group-object-id provided — skipping group creation, using ($group_object_id)"
+        $group_object_id
+    } else if ($existing_group_lookup != null) {
         utils print-info $"Group '($group_name)' already exists — skipping creation"
-        $existing_group.id
+        $existing_group_lookup.id
     } else if $dry_run {
         utils print-info $"Would create Entra group: ($group_name)"
         "dry-run-group-id"
@@ -471,18 +479,18 @@ export def onboard-project [
         utils print-info $"Would add ($sp_name) as owner of ($group_name)"
     } else {
         let is_member = try {
-            ^az ad group member check --group $group_name --member-id $sp_object_id --output json | from json | get value
+            ^az ad group member check --group $group_object_id --member-id $sp_object_id --output json | from json | get value
         } catch { false }
 
         if not $is_member {
-            ^az ad group member add --group $group_name --member-id $sp_object_id
+            ^az ad group member add --group $group_object_id --member-id $sp_object_id
             utils print-success $"($sp_name) added as member"
         } else {
             utils print-info $"($sp_name) already a member"
         }
 
         try {
-            ^az ad group owner add --group $group_name --owner-object-id $sp_object_id
+            ^az ad group owner add --group $group_object_id --owner-object-id $sp_object_id
             utils print-success $"($sp_name) added as owner"
         } catch {
             utils print-info $"($sp_name) may already be an owner"
@@ -520,11 +528,11 @@ export def onboard-project [
         utils print-info $"Would add backstage \(($backstage_object_id)\) as member of ($group_name)"
     } else {
         let is_member = try {
-            ^az ad group member check --group $group_name --member-id $backstage_object_id --output json | from json | get value
+            ^az ad group member check --group $group_object_id --member-id $backstage_object_id --output json | from json | get value
         } catch { false }
 
         if not $is_member {
-            ^az ad group member add --group $group_name --member-id $backstage_object_id
+            ^az ad group member add --group $group_object_id --member-id $backstage_object_id
             utils print-success "backstage added to admin group"
         } else {
             utils print-info "backstage already in admin group"

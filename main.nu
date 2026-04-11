@@ -942,7 +942,7 @@ def --wrapped main [...rest: string] {
                         print-subcommand-help {
                             usage: "platform project onboard [flags]"
                             description: "Automate all Azure and ADO pre-requisites before running the AKS GitOps Platform template.\n\nRequires az CLI logged in with a personal account (az login) and az devops extension.\n\nSteps automated (all idempotent):\n  1. Create ADO project\n  2. Create Entra group [project-name]-admins\n  3. Create SP sp-[project-name]-platform\n  4. Add SP as member + owner of admin group\n  5. Assign admin group as Subscription Owner\n  6. Add backstage identity to admin group\n  7. Add admin group as ADO Project Administrator\n  8. Grant org-level Agent Pool permission\n  9. Create sc-bootstrap WIF service connection (3-phase)\n\nPrints all Backstage form values at the end. ADO PAT must be created manually."
-                            options: "  --project-name <name>          Kebab-case project name, e.g. myproject (required)\n  --subscription-id <uuid>       Azure subscription UUID (required)\n  --tenant-id <uuid>             Entra ID tenant UUID (required)\n  --ado-org <url>                ADO org URL, e.g. https://dev.azure.com/myorg (required)\n  --backstage-object-id <uuid>   Object ID of the backstage App Registration (required)\n  --subscription-name <name>     Subscription display name (auto-detected when omitted)\n  --dry-run                      Preview all steps without making changes"
+                            options: "  --project-name <name>          ADO project name, e.g. Marketing (required)\n  --subscription-id <uuid>       Azure subscription UUID (required)\n  --tenant-id <uuid>             Entra ID tenant UUID (required)\n  --ado-org <url>                ADO org URL, e.g. https://dev.azure.com/myorg (required)\n  --backstage-object-id <uuid>   Object ID of the backstage App Registration (required)\n  --group-object-id <uuid>       Object ID of an existing Entra admin group (skips group creation)\n  --subscription-name <name>     Subscription display name (auto-detected when omitted)\n  --dry-run                      Preview all steps without making changes"
                             examples: "  platform project onboard --project-name myproject --subscription-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx --tenant-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx --ado-org https://dev.azure.com/myorg --backstage-object-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx\n  platform project onboard --project-name my-project --subscription-id <uuid> --tenant-id <uuid> --ado-org https://dev.azure.com/myorg --backstage-object-id <uuid> --dry-run"
                         }
                         return
@@ -953,8 +953,9 @@ def --wrapped main [...rest: string] {
                     let ado_org             = (get-flag $rest "--ado-org"             | default "")
                     let backstage_object_id = (get-flag $rest "--backstage-object-id" | default "")
                     let subscription_name   = (get-flag $rest "--subscription-name"   | default "")
+                    let group_object_id     = (get-flag $rest "--group-object-id"     | default "")
                     let dry_run             = ("--dry-run" in $rest)
-                    onboard-project --project-name $project_name --subscription-id $subscription_id --tenant-id $tenant_id --ado-org $ado_org --backstage-object-id $backstage_object_id --subscription-name $subscription_name --dry-run=$dry_run
+                    onboard-project --project-name $project_name --subscription-id $subscription_id --tenant-id $tenant_id --ado-org $ado_org --backstage-object-id $backstage_object_id --subscription-name $subscription_name --group-object-id $group_object_id --dry-run=$dry_run
                 },
                 _ => {
                     utils print-error $"Unknown project subcommand: ($rest.1). Available: onboard"

@@ -76,26 +76,32 @@ def main [] {
         ["validate-project-name: rejects empty string", {
             assert not (validate-project-name "")
         }],
-        ["validate-project-name: rejects uppercase", {
-            assert not (validate-project-name "MyProject")
+        ["validate-project-name: accepts uppercase", {
+            assert (validate-project-name "MyProject")
         }],
-        ["validate-project-name: rejects leading hyphen", {
-            assert not (validate-project-name "-myproject")
+        ["validate-project-name: accepts spaces", {
+            assert (validate-project-name "my project")
         }],
-        ["validate-project-name: rejects trailing hyphen", {
-            assert not (validate-project-name "myproject-")
+        ["validate-project-name: accepts leading hyphen", {
+            assert (validate-project-name "-myproject")
         }],
-        ["validate-project-name: rejects consecutive hyphens", {
-            assert not (validate-project-name "my--project")
+        ["validate-project-name: rejects leading period", {
+            assert not (validate-project-name ".myproject")
         }],
-        ["validate-project-name: rejects spaces", {
-            assert not (validate-project-name "my project")
+        ["validate-project-name: rejects trailing period", {
+            assert not (validate-project-name "myproject.")
         }],
-        ["validate-project-name: rejects leading digit", {
-            assert not (validate-project-name "1project")
+        ["validate-project-name: rejects backslash", {
+            assert not (validate-project-name "my\\project")
         }],
-        ["validate-project-name: rejects underscores", {
-            assert not (validate-project-name "my_project")
+        ["validate-project-name: rejects colon", {
+            assert not (validate-project-name "my:project")
+        }],
+        ["validate-project-name: accepts Marketing", {
+            assert (validate-project-name "Marketing")
+        }],
+        ["validate-project-name: accepts Finance GitOps Platform", {
+            assert (validate-project-name "Finance GitOps Platform")
         }],
 
         # ── build-wif-endpoint-body ───────────────────────────────────────────
