@@ -348,6 +348,7 @@ export def onboard-project [
     --backstage-object-id: string       # Object ID of the 'backstage' App Registration
     --subscription-name: string = ""    # Subscription display name (auto-detected when empty)
     --group-object-id: string = ""      # Object ID of an existing Entra admin group (skips group creation)
+    --ado-pat: string = ""              # ADO Personal Access Token (required for personal Microsoft accounts)
     --dry-run = false                   # Preview all steps without making any changes
 ] {
     # ── Pre-flight: ensure required tools are installed and credentials valid ──
@@ -359,6 +360,15 @@ export def onboard-project [
         ensure-az-logged-in
         ensure-correct-subscription $subscription_id
         ensure-az-devops-installed
+    }
+
+    # ── Configure ADO PAT if provided ─────────────────────────────────────────
+    # az devops respects AZURE_DEVOPS_EXT_PAT for authentication.
+    # Required for personal Microsoft accounts \(live.com\) where the Bearer token
+    # obtained by az login is not accepted by ADO's authorization layer.
+    if ($ado_pat | is-not-empty) {
+        $env.AZURE_DEVOPS_EXT_PAT = $ado_pat
+        utils print-success "ADO PAT configured for authentication"
     }
 
     # ── Validate inputs ────────────────────────────────────────────────────────
