@@ -5,6 +5,58 @@ use ../modules/onboarding.nu *
 def main [] {
     let tests = [
 
+        # ── detect-os ─────────────────────────────────────────────────────────
+        ["detect-os: returns a known OS string", {
+            let os = (detect-os)
+            assert (($os == "windows") or ($os == "macos") or ($os == "linux"))
+        }],
+        ["detect-os: returns a non-empty string", {
+            assert ((detect-os | str length) > 0)
+        }],
+
+        # ── format-az-install-instructions ────────────────────────────────────
+        ["format-az-install-instructions: windows contains winget", {
+            let s = (format-az-install-instructions "windows")
+            assert ($s | str contains "winget")
+        }],
+        ["format-az-install-instructions: windows contains Chocolatey", {
+            let s = (format-az-install-instructions "windows")
+            assert ($s | str contains "choco")
+        }],
+        ["format-az-install-instructions: windows contains MSI link", {
+            let s = (format-az-install-instructions "windows")
+            assert ($s | str contains "installazurecliwindows")
+        }],
+        ["format-az-install-instructions: macos contains brew", {
+            let s = (format-az-install-instructions "macos")
+            assert ($s | str contains "brew")
+        }],
+        ["format-az-install-instructions: macos contains InstallAzureCli", {
+            let s = (format-az-install-instructions "macos")
+            assert ($s | str contains "InstallAzureCli")
+        }],
+        ["format-az-install-instructions: linux contains apt/bash script", {
+            let s = (format-az-install-instructions "linux")
+            assert ($s | str contains "InstallAzureCLIDeb")
+        }],
+        ["format-az-install-instructions: linux contains dnf", {
+            let s = (format-az-install-instructions "linux")
+            assert ($s | str contains "dnf")
+        }],
+        ["format-az-install-instructions: linux contains full guide URL", {
+            let s = (format-az-install-instructions "linux")
+            assert ($s | str contains "install-azure-cli-linux")
+        }],
+        ["format-az-install-instructions: unknown OS falls back to linux", {
+            let s = (format-az-install-instructions "freebsd")
+            assert ($s | str contains "InstallAzureCLIDeb")
+        }],
+        ["format-az-install-instructions: returns non-empty string for each OS", {
+            for os in ["windows" "macos" "linux"] {
+                assert ((format-az-install-instructions $os | str length) > 0)
+            }
+        }],
+
         # ── validate-project-name ─────────────────────────────────────────────
         ["validate-project-name: single word", {
             assert (validate-project-name "myproject")

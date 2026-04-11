@@ -16,6 +16,36 @@ const ADO_RESOURCE_ID = "499b84ac-1321-427f-aa17-267ca6975798"
 
 # ── Pure functions (unit-testable, no I/O) ────────────────────────────────────
 
+# Detect the current operating system.
+# Returns "windows", "macos", or "linux".
+export def detect-os []: nothing -> string {
+    let os = ($env | get -o OS | default "" | str downcase)
+    let uname_s = (try { ^uname -s | str trim | str downcase } catch { "" })
+    if ($os | str contains "windows") or ($os | str contains "windows_nt") {
+        "windows"
+    } else if $uname_s == "darwin" {
+        "macos"
+    } else {
+        "linux"
+    }
+}
+
+# Return OS-specific installation instructions for the Azure CLI.
+# Pure function — no side effects.
+export def format-az-install-instructions [os: string]: nothing -> string {
+    match $os {
+        "windows" => {
+            "  Windows — choose one:\n    • winget:      winget install -e --id Microsoft.AzureCLI\n    • Chocolatey:  choco install azure-cli\n    • MSI:         https://aka.ms/installazurecliwindows"
+        }
+        "macos" => {
+            "  macOS — choose one:\n    • Homebrew:    brew update && brew install azure-cli\n    • Script:      curl -L https://aka.ms/InstallAzureCli | bash"
+        }
+        _ => {
+            "  Linux — choose one:\n    • Script:      curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash   (Debian/Ubuntu)\n    • dnf:         sudo dnf install azure-cli                              (RHEL/Fedora)\n    • zypper:      sudo zypper install azure-cli                           (SLES)\n    • Full guide:  https://docs.microsoft.com/cli/azure/install-azure-cli-linux"
+        }
+    }
+}
+
 # Validate that a project name is kebab-case.
 # Rules: lowercase letters and digits only; hyphens allowed between segments;
 # must start with a letter; no consecutive or trailing hyphens.
@@ -113,6 +143,153 @@ export def format-onboarding-summary [
 
 # ── Orchestration (calls Azure / ADO CLIs — not unit-testable) ────────────────
 
+# Ensure Azure CLI is installed. If not: show OS-specific install instructions,
+# ask user whether to install automatically or cancel, then install or exit.
+def ensure-az-installed [] {
+    if (which az | is-not-empty) { return }
+
+    let os = (detect-os)
+    utils print-error "Azure CLI (az) is not installed — it is required for this command."
+    print ""
+    print "Installation instructions:"
+    print (format-az-install-instructions $os)
+    print ""
+
+    if $os == "windows" {
+        # On Windows, automated install requires winget or an elevated shell — guide only
+        utils print-info "Please install Azure CLI using one of the methods above, then re-run this command."
+        exit 1
+    }
+
+    let answer = (utils prompt-confirm "Would you like platform-cli to install Azure CLI automatically?")
+    if not $answer {
+        utils print-info "Please install Azure CLI manually, then re-run this command."
+        exit 1
+    }
+
+    utils print-info $"Installing Azure CLI for ($os)..."
+    if $os == "macos" {
+        if (which brew | is-not-empty) {
+            ^brew update
+            ^brew install azure-cli
+        } else {
+            utils print-info "Homebrew not found — using install script..."
+            ^bash -c "curl -L https://aka.ms/InstallAzureCli | bash"
+        }
+    } else {
+        # Linux: try apt-based script first, fall back to guide
+        let apt_available = (which apt-get | is-not-empty)
+        if $apt_available {
+            ^bash -c "curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash"
+        } else {
+            utils print-error "Automatic install is only supported on Debian/Ubuntu. Please install manually:"
+            print (format-az-install-instructions "linux")
+            exit 1
+        }
+    }
+
+    if (which az | is-not-empty) {
+        utils print-success "Azure CLI installed successfully."
+    } else {
+        utils print-error "Azure CLI installation failed. Please install it manually and re-run this command."
+        exit 1
+    }
+}
+
+# Ensure az devops extension is installed.
+# If not: prompt user to install automatically or cancel.
+def ensure-az-devops-installed [] {
+    let installed = try {
+        ^az extension show --name azure-devops --output json 2>/dev/null | from json | get -o name | default "" | is-not-empty
+    } catch { false }
+
+    if $installed { return }
+
+    utils print-warning "The 'azure-devops' az extension is not installed."
+    let answer = (utils prompt-confirm "Would you like platform-cli to install it automatically? (az extension add --name azure-devops)")
+    if not $answer {
+        utils print-info "Please run: az extension add --name azure-devops"
+        utils print-info "Then re-run this command."
+        exit 1
+    }
+
+    utils print-info "Installing azure-devops extension..."
+    ^az extension add --name azure-devops
+    utils print-success "azure-devops extension installed."
+}
+
+# Ensure the developer is logged in to Azure CLI.
+# If not logged in: print guidance and trigger az login interactively.
+def ensure-az-logged-in [] {
+    let logged_in = try {
+        ^az account show --output json | from json | get -o id | default "" | is-not-empty
+    } catch { false }
+
+    if $logged_in { return }
+
+    utils print-warning "You are not logged in to Azure CLI."
+    utils print-info "Running 'az login' to authenticate..."
+    print ""
+    try {
+        ^az login
+    } catch {
+        utils print-error "Login failed. Please run 'az login' manually and re-run this command."
+        exit 1
+    }
+
+    # Verify again after login
+    let ok = try {
+        ^az account show --output json | from json | get -o id | default "" | is-not-empty
+    } catch { false }
+
+    if not $ok {
+        utils print-error "Login did not complete successfully. Please try 'az login' manually."
+        exit 1
+    }
+    utils print-success "Logged in to Azure CLI."
+}
+
+# Ensure the active subscription matches the requested one.
+# Shows the current subscription and prompts to switch if different,
+# or confirms if it's already correct.
+def ensure-correct-subscription [subscription_id: string] {
+    let current = try {
+        ^az account show --output json | from json
+    } catch {
+        utils print-error "Cannot read current subscription — are you logged in?"
+        exit 1
+    }
+
+    let current_id   = ($current | get -o id   | default "")
+    let current_name = ($current | get -o name | default "(unknown)")
+
+    if ($current_id | str downcase) == ($subscription_id | str downcase) {
+        utils print-success $"Active subscription: ($current_name) [($current_id)]"
+        return
+    }
+
+    utils print-warning $"Current active subscription: ($current_name) [($current_id)]"
+    utils print-warning $"Required subscription ID:    ($subscription_id)"
+    print ""
+    let answer = (utils prompt-confirm $"Switch active subscription to ($subscription_id)?")
+    if not $answer {
+        utils print-info "Please run: az account set --subscription <subscription-id>"
+        utils print-info "Then re-run this command."
+        exit 1
+    }
+
+    try {
+        ^az account set --subscription $subscription_id
+        let new_name = try {
+            ^az account show --output json | from json | get name
+        } catch { $subscription_id }
+        utils print-success $"Switched to subscription: ($new_name) [($subscription_id)]"
+    } catch {
+        utils print-error $"Failed to switch subscription. Please run: az account set --subscription ($subscription_id)"
+        exit 1
+    }
+}
+
 # Onboard a new project: automate all Azure and ADO pre-requisites required
 # before running the AKS GitOps Platform template in Backstage.
 #
@@ -142,10 +319,15 @@ export def onboard-project [
     --subscription-name: string = ""    # Subscription display name (auto-detected when empty)
     --dry-run = false                   # Preview all steps without making any changes
 ] {
-    utils require-command "az" "Azure CLI (https://docs.microsoft.com/cli/azure/install-azure-cli)"
-
+    # ── Pre-flight: ensure required tools are installed and credentials valid ──
     if $dry_run {
         utils print-warning "DRY-RUN mode — no changes will be made"
+        utils print-info "Skipping tool installation and login checks in dry-run mode"
+    } else {
+        ensure-az-installed
+        ensure-az-logged-in
+        ensure-correct-subscription $subscription_id
+        ensure-az-devops-installed
     }
 
     # ── Validate inputs ────────────────────────────────────────────────────────
@@ -180,21 +362,6 @@ export def onboard-project [
     utils print-info $"SP name       : ($sp_name)"
     utils print-info $"ADO org       : ($org_name)"
     utils print-success "Inputs valid"
-
-    # ── Ensure az devops extension is installed ────────────────────────────────
-    let devops_installed = try {
-        ^az extension show --name azure-devops --output json 2>/dev/null | from json | get -o name | default "" | is-not-empty
-    } catch { false }
-
-    if not $devops_installed {
-        if $dry_run {
-            utils print-warning "az devops extension not found — would install it"
-        } else {
-            utils print-info "Installing az devops extension..."
-            ^az extension add --name azure-devops
-            utils print-success "az devops extension ready"
-        }
-    }
 
     # ── Resolve subscription name ──────────────────────────────────────────────
     let resolved_sub_name = if ($subscription_name | is-not-empty) {
