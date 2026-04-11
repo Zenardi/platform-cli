@@ -534,6 +534,10 @@ export def onboard-project [
     # ── Step 7: Add group as ADO Project Administrator (Graph API) ────────────
     utils print-header "Step 7 — ADO Project Administrator"
 
+    # Holds the ADO subject descriptor for the admin group; populated in step 7,
+    # consumed in step 8 for pool role assignment.
+    mut group_ado_descriptor = ""
+
     if $dry_run {
         utils print-info $"Would add ($group_name) as ADO Project Administrator in ($project_name)"
     } else {
@@ -570,10 +574,20 @@ export def onboard-project [
                 } catch { null }
 
                 if ($entra_group_in_ado == null) {
-                    utils print-warning "Could not materialize Entra group in ADO"
+                    utils print-warning "Could not materialize Entra group in ADO (may already exist)"
                     utils print-warning "Add manually: ADO → Project Settings → Permissions → Project Administrators → Members"
+                    # Fallback: look up existing ADO group by originId
+                    let all_aad_groups = try {
+                        ^az rest --method GET --url $"https://vssps.dev.azure.com/($org_name)/_apis/graph/groups?subjectTypes=aadgp&api-version=7.1-preview.1" --resource $ADO_RESOURCE_ID --output json | from json | get value
+                    } catch { [] }
+                    let found_group = ($all_aad_groups | where { |g| ($g | get -o originId | default "") == $group_object_id } | get 0?)
+                    if ($found_group != null) {
+                        $group_ado_descriptor = $found_group.descriptor
+                        utils print-info $"Resolved existing ADO descriptor for ($group_name)"
+                    }
                 } else {
                     let member_descriptor = $entra_group_in_ado.descriptor
+                    $group_ado_descriptor = $member_descriptor
                     # Add membership explicitly (materialization may or may not add it)
                     let membership_url = ($"https://vssps.dev.azure.com/($org_name)/_apis/graph/memberships/($member_descriptor)/($proj_admin_group.descriptor)" + "?api-version=7.1-preview.1")
                     try {
@@ -591,30 +605,47 @@ export def onboard-project [
     utils print-header "Step 8 — Org-Level Agent Pool Permission"
 
     if $dry_run {
-        utils print-info $"Would grant ($group_name) Agent Pool Administrator permission at org level"
+        utils print-info $"Would grant ($group_name) Agent Pool User permission at org level"
     } else {
-        let pools_url = ($"https://dev.azure.com/($org_name)/_apis/distributedtask/pools" + "?api-version=7.1")
-        let pools = try {
-            ^az rest --method GET --url $pools_url --resource $ADO_RESOURCE_ID --output json | from json | get value
-        } catch { [] }
-
-        if ($pools | is-empty) {
-            utils print-warning "Could not retrieve agent pools — grant permission manually"
-            utils print-warning "ADO → Organization Settings → Agent Pools → Security → Add group as Administrator"
-        } else {
-            mut granted = 0
-            for pool in $pools {
-                let pool_users_url = ($"https://dev.azure.com/($org_name)/_apis/distributedtask/pools/($pool.id)/users" + "?api-version=7.1-preview.1")
-                try {
-                    ^az rest --method PATCH --url $pool_users_url --resource $ADO_RESOURCE_ID --headers "Content-Type=application/json" --body $"{\"subjectDescriptor\": \"($group_object_id)\", \"roleName\": \"Administrator\"}" --output none
-                    $granted = ($granted + 1)
-                } catch { }
+        # Resolve descriptor if step 7 didn't populate it (e.g. dry_run path above skipped step 7)
+        mut pool_descriptor = $group_ado_descriptor
+        if ($pool_descriptor | is-empty) {
+            let all_aad_groups = try {
+                ^az rest --method GET --url $"https://vssps.dev.azure.com/($org_name)/_apis/graph/groups?subjectTypes=aadgp&api-version=7.1-preview.1" --resource $ADO_RESOURCE_ID --output json | from json | get value
+            } catch { [] }
+            let found_group = ($all_aad_groups | where { |g| ($g | get -o originId | default "") == $group_object_id } | get 0?)
+            if ($found_group != null) {
+                $pool_descriptor = $found_group.descriptor
             }
-            if $granted > 0 {
-                utils print-success $"Agent Pool Administrator granted on ($granted) pool(s)"
+        }
+
+        if ($pool_descriptor | is-empty) {
+            utils print-warning "Could not resolve ADO descriptor for admin group — grant pool permission manually"
+            utils print-warning "ADO → Organisation Settings → Agent Pools → <pool> → Security → Add group as User"
+        } else {
+            let pools_url = $"https://dev.azure.com/($org_name)/_apis/distributedtask/pools?api-version=7.1"
+            let pools = try {
+                ^az rest --method GET --url $pools_url --resource $ADO_RESOURCE_ID --output json | from json | get value
+            } catch { [] }
+
+            if ($pools | is-empty) {
+                utils print-warning "Could not retrieve agent pools — grant permission manually"
+                utils print-warning "ADO → Organisation Settings → Agent Pools → <pool> → Security → Add group as User"
             } else {
-                utils print-warning "Could not grant pool permissions automatically"
-                utils print-warning "ADO → Organization Settings → Agent Pools → Security → Add group as Administrator"
+                mut granted = 0
+                for pool in $pools {
+                    let role_url = $"https://dev.azure.com/($org_name)/_apis/securityroles/scopes/distributedtask.agentpoolrole/roleassignments/resources/($pool.id)?api-version=7.1-preview.1"
+                    try {
+                        ^az rest --method PUT --url $role_url --resource $ADO_RESOURCE_ID --headers "Content-Type=application/json" --body $"[{\"roleName\": \"User\", \"userId\": \"($pool_descriptor)\"}]" --output none
+                        $granted = ($granted + 1)
+                    } catch { }
+                }
+                if $granted > 0 {
+                    utils print-success $"Agent Pool User role granted on ($granted) org pool(s)"
+                } else {
+                    utils print-warning "Could not grant pool permissions automatically"
+                    utils print-warning "ADO → Organisation Settings → Agent Pools → <pool> → Security → Add group as User"
+                }
             }
         }
     }
