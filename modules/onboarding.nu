@@ -581,13 +581,36 @@ export def onboard-project [
     if $dry_run {
         utils print-info $"Would add backstage \(($backstage_object_id)\) as member of ($group_name)"
     } else {
+        # Entra groups only accept Service Principal object IDs as members.
+        # The --backstage-object-id flag holds the App Registration object ID,
+        # which is a different object from the associated Service Principal.
+        # Resolve the SP object ID via the app's appId (client ID).
+        let backstage_sp_id = try {
+            let app_id = (^az ad app show --id $backstage_object_id --query appId --output tsv | str trim)
+            ^az ad sp show --id $app_id --query id --output tsv | str trim
+        } catch {
+            # If lookup fails, the caller may have already passed a SP object ID directly
+            $backstage_object_id
+        }
+
+        if ($backstage_sp_id | is-empty) or ($backstage_sp_id == $backstage_object_id) {
+            utils print-warning $"Could not resolve SP object ID for backstage app \(($backstage_object_id)\) — using value as-is"
+        } else {
+            utils print-info $"Resolved backstage SP object ID: ($backstage_sp_id)"
+        }
+
         let is_member = try {
-            ^az ad group member check --group $group_object_id --member-id $backstage_object_id --output json | from json | get value
+            ^az ad group member check --group $group_object_id --member-id $backstage_sp_id --output json | from json | get value
         } catch { false }
 
         if not $is_member {
-            ^az ad group member add --group $group_object_id --member-id $backstage_object_id
-            utils print-success "backstage added to admin group"
+            try {
+                ^az ad group member add --group $group_object_id --member-id $backstage_sp_id
+                utils print-success "backstage added to admin group"
+            } catch {
+                utils print-error $"Failed to add backstage to admin group. Verify that ($backstage_object_id) is a valid App Registration or Service Principal Object ID."
+                exit 1
+            }
         } else {
             utils print-info "backstage already in admin group"
         }
