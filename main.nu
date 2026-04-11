@@ -340,7 +340,7 @@ export def deploy [instance_path: string, --environment: string = "production"] 
 }
 
 # Main entry point — Platform CLI for Backstage IdP automation
-def --wrapped main [...rest] {
+def --wrapped main [...rest: string] {
     if ($rest | is-empty) or ("--help" in $rest) and ($rest | length) == 1 or ("-h" in $rest) and ($rest | length) == 1 {
         print-help
         return
