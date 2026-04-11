@@ -57,7 +57,7 @@ export def validate-path [path: string, name: string] {
 }
 
 export def prompt-confirm [message: string] {
-    let response = (input $"($message) (y/n): ")
+    let response = (input $"($message) \(y/n\): ")
     ($response | str downcase) == "y"
 }
 

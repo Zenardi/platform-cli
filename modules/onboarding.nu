@@ -200,7 +200,7 @@ def ensure-az-installed [] {
 # If not: prompt user to install automatically or cancel.
 def ensure-az-devops-installed [] {
     let installed = try {
-        ^az extension show --name azure-devops --output json 2>/dev/null | from json | get -o name | default "" | is-not-empty
+        ^az extension show --name azure-devops --output json | from json | get -o name | default "" | is-not-empty
     } catch { false }
 
     if $installed { return }
@@ -382,7 +382,7 @@ export def onboard-project [
     utils print-header $"Step 1 — ADO Project: ($project_name)"
 
     let existing_project = try {
-        ^az devops project show --project $project_name --org $ado_org --output json 2>/dev/null | from json
+        ^az devops project show --project $project_name --org $ado_org --output json | from json
     } catch { null }
 
     let project_id = if ($existing_project != null) {
@@ -406,7 +406,7 @@ export def onboard-project [
     utils print-header $"Step 2 — Entra Group: ($group_name)"
 
     let existing_group = try {
-        ^az ad group show --group $group_name --output json 2>/dev/null | from json
+        ^az ad group show --group $group_name --output json | from json
     } catch { null }
 
     let group_object_id = if ($existing_group != null) {
@@ -430,7 +430,7 @@ export def onboard-project [
     utils print-header $"Step 3 — Service Principal: ($sp_name)"
 
     let existing_sp_list = try {
-        ^az ad sp list --display-name $sp_name --output json 2>/dev/null | from json
+        ^az ad sp list --display-name $sp_name --output json | from json
     } catch { [] }
     let existing_sp = ($existing_sp_list | get 0?)
 
