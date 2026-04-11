@@ -548,11 +548,28 @@ export def onboard-project [
         if $existing_assignments > 0 {
             utils print-info $"($group_name) already has Owner on subscription — skipping"
         } else {
-            try {
-                ^az role assignment create --assignee $group_object_id --role Owner --scope $sub_scope --output none
-                utils print-success $"($group_name) assigned as Subscription Owner"
-            } catch {
-                utils print-error "Failed to assign Subscription Owner role"
+            # AAD group replication can take 10-60 s after creation.
+            # Retry up to 6 times with 15 s backoff before giving up.
+            mut assigned = false
+            mut attempt  = 0
+            while (not $assigned) and ($attempt < 6) {
+                $attempt = $attempt + 1
+                let result = try {
+                    ^az role assignment create --assignee $group_object_id --assignee-principal-type Group --role Owner --scope $sub_scope --output none
+                    true
+                } catch { false }
+
+                if $result {
+                    $assigned = true
+                    utils print-success $"($group_name) assigned as Subscription Owner"
+                } else if $attempt < 6 {
+                    utils print-info $"Role assignment attempt ($attempt)/6 failed \(AAD replication delay\) — retrying in 15 s..."
+                    sleep 15sec
+                }
+            }
+
+            if not $assigned {
+                utils print-error $"Failed to assign Subscription Owner role after 6 attempts. Check that ($group_object_id) exists in the directory."
                 exit 1
             }
         }
