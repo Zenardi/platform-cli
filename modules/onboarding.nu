@@ -724,41 +724,48 @@ export def onboard-project [
             utils print-warning "ADO → Organisation Settings → Agent Pools → <pool> → Security → Add group as User"
         } else {
             let pools_url = $"https://dev.azure.com/($org_name)/_apis/distributedtask/pools?api-version=7.1"
-            let pools = try {
+            let all_pools = try {
                 ^az rest --method GET --url $pools_url --resource $ADO_RESOURCE_ID --output json | from json | get value
             } catch { [] }
 
+            # Only self-hosted pools support custom role assignments; skip Microsoft-hosted (isHosted=true)
+            let pools = ($all_pools | where { |p| not ($p | get -o isHosted | default false) })
+
             if ($pools | is-empty) {
-                utils print-warning "Could not retrieve agent pools — grant permission manually"
+                utils print-warning "No self-hosted agent pools found — grant permission manually"
                 utils print-warning "ADO → Organisation Settings → Agent Pools → <pool> → Security → Add group as User"
             } else {
-                let role_name = "User"
-
                 # Convert Graph subject descriptor → Identity storage key (GUID).
-                # The Security Roles API expects an identity storage key, not a Graph descriptor.
-                # Copy mut to let so it can be captured in the catch closure.
+                # The Security Roles API requires the ADO identity storage key, not the Graph descriptor.
                 let resolved_descriptor = $pool_descriptor
                 let identity_url = $"https://vssps.dev.azure.com/($org_name)/_apis/identities?subjectDescriptors=($resolved_descriptor)&api-version=7.1-preview.1"
                 let identity_id = try {
                     let ident = (^az rest --method GET --url $identity_url --resource $ADO_RESOURCE_ID --output json | from json | get value | first)
                     $ident.id
-                } catch { $resolved_descriptor }
+                } catch { "" }
 
-                utils print-info $"Using role '($role_name)' for agent pool assignment"
-
-                mut granted = 0
-                for pool in $pools {
-                    let role_url = $"https://dev.azure.com/($org_name)/_apis/securityroles/scopes/distributedtask.agentpoolrole/roleassignments/resources/($pool.id)?api-version=7.1-preview.1"
-                    try {
-                        ^az rest --method PUT --url $role_url --resource $ADO_RESOURCE_ID --headers "Content-Type=application/json" --body $"[{\"roleName\": \"($role_name)\", \"userId\": \"($identity_id)\"}]" --output none
-                        $granted = ($granted + 1)
-                    } catch { }
-                }
-                if $granted > 0 {
-                    utils print-success $"Agent Pool ($role_name) role granted on ($granted) org pool\(s\)"
-                } else {
-                    utils print-warning "Could not grant pool permissions automatically"
+                if ($identity_id | is-empty) {
+                    utils print-warning $"Could not resolve ADO identity storage key for descriptor ($resolved_descriptor)"
                     utils print-warning "ADO → Organisation Settings → Agent Pools → <pool> → Security → Add group as User"
+                } else {
+                    utils print-info $"Granting Agent Pool 'User' role to identity ($identity_id) on ($pools | length) self-hosted pool\(s\)"
+
+                    mut granted = 0
+                    for pool in $pools {
+                        # PATCH is the correct verb for Security Roles role assignment updates
+                        let role_url = $"https://dev.azure.com/($org_name)/_apis/securityroles/scopes/distributedtask.agentpoolrole/roleassignments/resources/($pool.id)?api-version=7.1-preview.1"
+                        try {
+                            ^az rest --method PATCH --url $role_url --resource $ADO_RESOURCE_ID --headers "Content-Type=application/json" --body $"[{\"roleName\": \"User\", \"userId\": \"($identity_id)\"}]" --output none
+                            utils print-info $"  ✓ ($pool.name)"
+                            $granted = ($granted + 1)
+                        } catch { utils print-info $"  ✗ ($pool.name) — skipped" }
+                    }
+                    if $granted > 0 {
+                        utils print-success $"Agent Pool User role granted on ($granted) self-hosted pool\(s\)"
+                    } else {
+                        utils print-warning "Could not grant pool permissions automatically"
+                        utils print-warning "ADO → Organisation Settings → Agent Pools → <pool> → Security → Add group as User"
+                    }
                 }
             }
         }
