@@ -338,7 +338,7 @@ export def onboard-project [
         exit 1
     }
     if not (validate-project-name $project_name) {
-        utils print-error $"Invalid project name '($project_name)'. Use lowercase letters, digits, and hyphens (e.g. myproject or my-project)"
+        utils print-error $"Invalid project name '($project_name)'. Use lowercase letters, digits, and hyphens \(e.g. myproject or my-project\)"
         exit 1
     }
     for param in [
@@ -422,7 +422,7 @@ export def onboard-project [
             utils print-error $"Failed to create group '($group_name)'"
             exit 1
         }
-        utils print-success $"Group '($group_name)' created (Object ID: ($created.id))"
+        utils print-success $"Group '($group_name)' created \(Object ID: ($created.id)\)"
         $created.id
     }
 
@@ -447,7 +447,7 @@ export def onboard-project [
             utils print-error $"Failed to create SP '($sp_name)'"
             exit 1
         }
-        utils print-success $"SP '($sp_name)' created (appId: ($created.appId))"
+        utils print-success $"SP '($sp_name)' created \(appId: ($created.appId)\)"
         $created.appId
     }
 
@@ -517,7 +517,7 @@ export def onboard-project [
     utils print-header "Step 6 — backstage in Admin Group"
 
     if $dry_run {
-        utils print-info $"Would add backstage (($backstage_object_id)) as member of ($group_name)"
+        utils print-info $"Would add backstage \(($backstage_object_id)\) as member of ($group_name)"
     } else {
         let is_member = try {
             ^az ad group member check --group $group_name --member-id $backstage_object_id --output json | from json | get value
@@ -641,7 +641,7 @@ export def onboard-project [
                     } catch { }
                 }
                 if $granted > 0 {
-                    utils print-success $"Agent Pool User role granted on ($granted) org pool(s)"
+                    utils print-success $"Agent Pool User role granted on ($granted) org pool\(s\)"
                 } else {
                     utils print-warning "Could not grant pool permissions automatically"
                     utils print-warning "ADO → Organisation Settings → Agent Pools → <pool> → Security → Add group as User"
@@ -688,7 +688,7 @@ export def onboard-project [
                 exit 1
             }
 
-            utils print-success $"Phase 1 done (endpoint id: ($endpoint_id))"
+            utils print-success $"Phase 1 done \(endpoint id: ($endpoint_id)\)"
             utils print-info $"Issuer:  ($issuer)"
             utils print-info $"Subject: ($subject)"
 
