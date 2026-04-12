@@ -787,7 +787,16 @@ export def onboard-project [
 
     if $dry_run {
         utils print-info $"Would grant ($group_name) Agent Pool User permission at org level"
+        utils print-info $"Would grant sp-crossplane Agent Pool Administrator on ($pool_name)"
     } else {
+        # Fetch all self-hosted pools once — reused by both sub-steps below
+        let pools_url = $"https://dev.azure.com/($org_name)/_apis/distributedtask/pools?api-version=7.1"
+        let all_pools = try {
+            ^az rest --method GET --url $pools_url --resource $ADO_RESOURCE_ID --output json | from json | get value
+        } catch { [] }
+        let self_hosted_pools = ($all_pools | where { |p| not ($p | get -o isHosted | default false) })
+
+        # ── 8a: Grant admin group User role on all self-hosted pools ──────────
         # Resolve descriptor if step 7 didn't populate it (e.g. dry_run path above skipped step 7)
         mut pool_descriptor = $group_ado_descriptor
         if ($pool_descriptor | is-empty) {
@@ -803,49 +812,94 @@ export def onboard-project [
         if ($pool_descriptor | is-empty) {
             utils print-warning "Could not resolve ADO descriptor for admin group — grant pool permission manually"
             utils print-warning "ADO → Organisation Settings → Agent Pools → <pool> → Security → Add group as User"
+        } else if ($self_hosted_pools | is-empty) {
+            utils print-warning "No self-hosted agent pools found — grant permission manually"
+            utils print-warning "ADO → Organisation Settings → Agent Pools → <pool> → Security → Add group as User"
         } else {
-            let pools_url = $"https://dev.azure.com/($org_name)/_apis/distributedtask/pools?api-version=7.1"
-            let all_pools = try {
-                ^az rest --method GET --url $pools_url --resource $ADO_RESOURCE_ID --output json | from json | get value
-            } catch { [] }
+            # Convert Graph subject descriptor → Identity storage key (GUID).
+            # The Security Roles API requires the ADO identity storage key, not the Graph descriptor.
+            let resolved_descriptor = $pool_descriptor
+            let identity_url = $"https://vssps.dev.azure.com/($org_name)/_apis/identities?subjectDescriptors=($resolved_descriptor)&api-version=7.1-preview.1"
+            let identity_id = try {
+                let ident = (^az rest --method GET --url $identity_url --resource $ADO_RESOURCE_ID --output json | from json | get value | first)
+                $ident.id
+            } catch { "" }
 
-            # Only self-hosted pools support custom role assignments; skip Microsoft-hosted (isHosted=true)
-            let pools = ($all_pools | where { |p| not ($p | get -o isHosted | default false) })
-
-            if ($pools | is-empty) {
-                utils print-warning "No self-hosted agent pools found — grant permission manually"
+            if ($identity_id | is-empty) {
+                utils print-warning $"Could not resolve ADO identity storage key for descriptor ($resolved_descriptor)"
                 utils print-warning "ADO → Organisation Settings → Agent Pools → <pool> → Security → Add group as User"
             } else {
-                # Convert Graph subject descriptor → Identity storage key (GUID).
-                # The Security Roles API requires the ADO identity storage key, not the Graph descriptor.
-                let resolved_descriptor = $pool_descriptor
-                let identity_url = $"https://vssps.dev.azure.com/($org_name)/_apis/identities?subjectDescriptors=($resolved_descriptor)&api-version=7.1-preview.1"
-                let identity_id = try {
-                    let ident = (^az rest --method GET --url $identity_url --resource $ADO_RESOURCE_ID --output json | from json | get value | first)
-                    $ident.id
-                } catch { "" }
+                utils print-info $"Granting Agent Pool 'User' role to identity ($identity_id) on ($self_hosted_pools | length) self-hosted pool\(s\)"
 
-                if ($identity_id | is-empty) {
-                    utils print-warning $"Could not resolve ADO identity storage key for descriptor ($resolved_descriptor)"
-                    utils print-warning "ADO → Organisation Settings → Agent Pools → <pool> → Security → Add group as User"
+                mut granted = 0
+                for pool in $self_hosted_pools {
+                    # PATCH is the correct verb for Security Roles role assignment updates
+                    let role_url = $"https://dev.azure.com/($org_name)/_apis/securityroles/scopes/distributedtask.agentpoolrole/roleassignments/resources/($pool.id)?api-version=7.1-preview.1"
+                    try {
+                        ^az rest --method PATCH --url $role_url --resource $ADO_RESOURCE_ID --headers "Content-Type=application/json" --body $"[{\"roleName\": \"User\", \"userId\": \"($identity_id)\"}]" --output none
+                        utils print-info $"  ✓ ($pool.name)"
+                        $granted = ($granted + 1)
+                    } catch { utils print-info $"  ✗ ($pool.name) — skipped" }
+                }
+                if $granted > 0 {
+                    utils print-success $"Agent Pool User role granted on ($granted) self-hosted pool\(s\)"
                 } else {
-                    utils print-info $"Granting Agent Pool 'User' role to identity ($identity_id) on ($pools | length) self-hosted pool\(s\)"
+                    utils print-warning "Could not grant pool permissions automatically"
+                    utils print-warning "ADO → Organisation Settings → Agent Pools → <pool> → Security → Add group as User"
+                }
+            }
+        }
 
-                    mut granted = 0
-                    for pool in $pools {
-                        # PATCH is the correct verb for Security Roles role assignment updates
-                        let role_url = $"https://dev.azure.com/($org_name)/_apis/securityroles/scopes/distributedtask.agentpoolrole/roleassignments/resources/($pool.id)?api-version=7.1-preview.1"
-                        try {
-                            ^az rest --method PATCH --url $role_url --resource $ADO_RESOURCE_ID --headers "Content-Type=application/json" --body $"[{\"roleName\": \"User\", \"userId\": \"($identity_id)\"}]" --output none
-                            utils print-info $"  ✓ ($pool.name)"
-                            $granted = ($granted + 1)
-                        } catch { utils print-info $"  ✗ ($pool.name) — skipped" }
-                    }
-                    if $granted > 0 {
-                        utils print-success $"Agent Pool User role granted on ($granted) self-hosted pool\(s\)"
+        # ── 8b: Grant sp-crossplane Administrator on pool-<project-slug> ──────
+        # sp-crossplane is used by the sc-bootstrap service connection (WIF).
+        # Terraform's azuredevops_agent_queue resource creates the project queue
+        # for this pool, which requires the caller to have at least Use (User role)
+        # on the pool. We grant Administrator to give it full management rights.
+        utils print-info $"Granting sp-crossplane Administrator role on ($pool_name)..."
+        let target_pool = ($self_hosted_pools | where { |p| $p.name == $pool_name } | get 0?)
+
+        if ($target_pool == null) {
+            utils print-warning $"Pool '($pool_name)' not found — grant sp-crossplane Administrator manually"
+            utils print-warning $"ADO → Organisation Settings → Agent Pools → ($pool_name) → Security → Add sp-crossplane as Administrator"
+        } else {
+            # Look up sp-crossplane Entra OID
+            let crossplane_oid = try {
+                ^az ad sp list --display-name "sp-crossplane" --query "[0].id" --output tsv | str trim
+            } catch { "" }
+
+            if ($crossplane_oid | is-empty) {
+                utils print-warning "Could not find 'sp-crossplane' in Entra — grant Administrator manually"
+                utils print-warning $"ADO → Organisation Settings → Agent Pools → ($pool_name) → Security → Add sp-crossplane as Administrator"
+            } else {
+                # Find sp-crossplane in ADO Graph service principals by Entra originId
+                let all_sps = try {
+                    ^az rest --method GET --url $"https://vssps.dev.azure.com/($org_name)/_apis/graph/servicePrincipals?api-version=7.1-preview.1" --resource $ADO_RESOURCE_ID --output json | from json | get value
+                } catch { [] }
+                let sp_entry = ($all_sps | where { |s| ($s | get -o originId | default "") == $crossplane_oid } | get 0?)
+
+                if ($sp_entry == null) {
+                    utils print-warning "sp-crossplane not found in ADO — it may not have accessed ADO yet. Grant Administrator manually."
+                    utils print-warning $"ADO → Organisation Settings → Agent Pools → ($pool_name) → Security → Add sp-crossplane as Administrator"
+                } else {
+                    let crossplane_descriptor = $sp_entry.descriptor
+                    let crossplane_identity_url = $"https://vssps.dev.azure.com/($org_name)/_apis/identities?subjectDescriptors=($crossplane_descriptor)&api-version=7.1-preview.1"
+                    let crossplane_identity_id = try {
+                        let ident = (^az rest --method GET --url $crossplane_identity_url --resource $ADO_RESOURCE_ID --output json | from json | get value | first)
+                        $ident.id
+                    } catch { "" }
+
+                    if ($crossplane_identity_id | is-empty) {
+                        utils print-warning "Could not resolve ADO identity key for sp-crossplane — grant Administrator manually"
+                        utils print-warning $"ADO → Organisation Settings → Agent Pools → ($pool_name) → Security → Add sp-crossplane as Administrator"
                     } else {
-                        utils print-warning "Could not grant pool permissions automatically"
-                        utils print-warning "ADO → Organisation Settings → Agent Pools → <pool> → Security → Add group as User"
+                        let role_url = $"https://dev.azure.com/($org_name)/_apis/securityroles/scopes/distributedtask.agentpoolrole/roleassignments/resources/($target_pool.id)?api-version=7.1-preview.1"
+                        try {
+                            ^az rest --method PATCH --url $role_url --resource $ADO_RESOURCE_ID --headers "Content-Type=application/json" --body $"[{\"roleName\": \"Administrator\", \"userId\": \"($crossplane_identity_id)\"}]" --output none
+                            utils print-success $"sp-crossplane granted Administrator on ($pool_name)"
+                        } catch {
+                            utils print-warning $"Could not grant sp-crossplane Administrator on ($pool_name) — grant manually"
+                            utils print-warning $"ADO → Organisation Settings → Agent Pools → ($pool_name) → Security → Add sp-crossplane as Administrator"
+                        }
                     }
                 }
             }
