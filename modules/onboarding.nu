@@ -329,15 +329,17 @@ def ensure-correct-subscription [subscription_id: string] {
 #   - ADO Organization Administrator access
 #
 # Steps automated:
-#   1. Create ADO project (idempotent — skips if already exists)
-#   2. Create Entra group [project-name]-admins
-#   3. Create SP sp-[project-name]-platform
-#   4. Add SP as member + owner of the admin group
-#   5. Assign admin group as Subscription Owner
-#   6. Add the backstage identity to the admin group
-#   7. Add admin group as ADO Project Administrator (Graph API)
-#   8. Grant org-level Agent Pool permission to admin group
-#   9. Create sc-bootstrap WIF service connection (3-phase: create → fedcred → verify)
+#   1.  Create ADO project (idempotent — skips if already exists)
+#   1b. Create self-hosted agent pool pool-[slug] in ADO project
+#   2.  Create Entra group [project-name]-admins
+#   3.  Create SP sp-[project-name]-platform
+#   4.  Add SP as member + owner of the admin group
+#   4b. Add the currently logged-in user as member of the admin group
+#   5.  Assign admin group as Subscription Owner
+#   6.  Add the backstage identity to the admin group
+#   7.  Add admin group as ADO Project Administrator (Graph API)
+#   8.  Grant org-level Agent Pool permission to admin group
+#   9.  Create sc-bootstrap WIF service connection (3-phase: create → fedcred → verify)
 #
 # Step not automated (PAT): printed as a clear manual reminder at the end.
 export def onboard-project [
@@ -394,13 +396,16 @@ export def onboard-project [
         }
     }
 
-    let group_name = $"($project_name | str downcase | str replace --all ' ' '-')-admins"
-    let sp_name    = $"sp-($project_name | str downcase | str replace --all ' ' '-')-platform"
-    let org_name   = ($ado_org | str replace "https://dev.azure.com/" "" | str trim --char "/")
+    let project_slug = ($project_name | str downcase | str replace --all ' ' '-')
+    let group_name   = $"($project_slug)-admins"
+    let sp_name      = $"sp-($project_slug)-platform"
+    let pool_name    = $"pool-($project_slug)"
+    let org_name     = ($ado_org | str replace "https://dev.azure.com/" "" | str trim --char "/")
 
     utils print-info $"Project       : ($project_name)"
     utils print-info $"Admin group   : ($group_name)"
     utils print-info $"SP name       : ($sp_name)"
+    utils print-info $"Agent pool    : ($pool_name)"
     utils print-info $"ADO org       : ($org_name)"
     utils print-success "Inputs valid"
 
@@ -441,6 +446,43 @@ export def onboard-project [
         }
         utils print-success $"ADO project '($project_name)' created"
         $created.id
+    }
+
+    # ── Step 1b: Create agent pool in ADO project ──────────────────────────────
+    utils print-header $"Step 1b — ADO Agent Pool: ($pool_name)"
+
+    if $dry_run {
+        utils print-info $"Would create agent pool '($pool_name)' in project ($project_name)"
+    } else {
+        # List existing pools in the project to check for idempotency
+        let existing_pools = try {
+            ^az rest --method GET --url $"https://dev.azure.com/($org_name)/($project_name)/_apis/distributedtask/queues?api-version=7.1" --resource $ADO_RESOURCE_ID --output json | from json | get value
+        } catch { [] }
+        let existing_pool = ($existing_pools | where { |p| ($p | get -o name | default "") == $pool_name } | get 0?)
+
+        if ($existing_pool != null) {
+            utils print-info $"Agent pool '($pool_name)' already exists — skipping creation"
+        } else {
+            # Step 1: Create the org-level pool
+            let create_pool_body = $"{\"name\": \"($pool_name)\", \"poolType\": 1, \"isHosted\": false, \"autoProvision\": false}"
+            let created_pool = try {
+                ^az rest --method POST --url $"https://dev.azure.com/($org_name)/_apis/distributedtask/pools?api-version=7.1" --resource $ADO_RESOURCE_ID --headers "Content-Type=application/json" --body $create_pool_body --output json | from json
+            } catch {
+                utils print-warning $"Could not create org-level pool '($pool_name)' — may require org admin permissions"
+                null
+            }
+
+            if ($created_pool != null) {
+                # Step 2: Expose the pool in the project (create a queue that links to it)
+                let queue_body = $"{\"name\": \"($pool_name)\", \"pool\": {\"id\": ($created_pool.id)}}"
+                try {
+                    ^az rest --method POST --url $"https://dev.azure.com/($org_name)/($project_name)/_apis/distributedtask/queues?api-version=7.1" --resource $ADO_RESOURCE_ID --headers "Content-Type=application/json" --body $queue_body --output none
+                    utils print-success $"Agent pool '($pool_name)' created and exposed in project ($project_name)"
+                } catch {
+                    utils print-warning $"Pool created at org level but could not expose in project — check ADO → Project Settings → Agent Pools"
+                }
+            }
+        }
     }
 
     # ── Step 2: Create Entra admin group ───────────────────────────────────────
@@ -531,6 +573,45 @@ export def onboard-project [
             utils print-success $"($sp_name) added as owner"
         } catch {
             utils print-info $"($sp_name) may already be an owner"
+        }
+    }
+
+    # ── Step 4b: Add current user to admin group ───────────────────────────────
+    utils print-header "Step 4b — Current User in Admin Group"
+
+    if $dry_run {
+        utils print-info "Would add the currently logged-in Azure user as member of the admin group"
+    } else {
+        let current_user = try {
+            ^az ad signed-in-user show --output json | from json
+        } catch { null }
+
+        if ($current_user == null) {
+            utils print-warning "Could not resolve current user — skipping. Managed-identity/SP sessions cannot be added as group members."
+            utils print-warning $"Add yourself manually: az ad group member add --group ($group_object_id) --member-id <your-user-object-id>"
+        } else {
+            let current_user_id   = ($current_user | get -o id | default "")
+            let current_user_name = ($current_user | get -o userPrincipalName | default ($current_user | get -o displayName | default "unknown"))
+
+            if ($current_user_id | is-empty) {
+                utils print-warning "Could not resolve current user object ID — skipping"
+            } else {
+                let already_member = try {
+                    ^az ad group member check --group $group_object_id --member-id $current_user_id --output json | from json | get value
+                } catch { false }
+
+                if $already_member {
+                    utils print-info $"($current_user_name) already a member of ($group_name)"
+                } else {
+                    try {
+                        ^az ad group member add --group $group_object_id --member-id $current_user_id
+                        utils print-success $"($current_user_name) added to ($group_name)"
+                    } catch {
+                        utils print-warning $"Could not add ($current_user_name) to group — they may be a guest user or lack direct-add permissions"
+                        utils print-warning $"Add manually: az ad group member add --group ($group_object_id) --member-id ($current_user_id)"
+                    }
+                }
+            }
         }
     }
 
